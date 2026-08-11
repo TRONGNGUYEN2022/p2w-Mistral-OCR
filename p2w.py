@@ -215,7 +215,8 @@ def process_with_docling(file_bytes, file_name, file_type, api_key):
     if not task_id:
         raise Exception(f"Không nhận được task_id từ Docling: {res_data}")
 
-    for _ in range(40):
+    # Tăng số lần polling lên 80 lần (khoảng gần 7 phút) để tránh timeout
+    for _ in range(80):
         time.sleep(5)
         url_status = f"{DOCLING_BASE_URL}/v1/status/poll/{task_id}"
         st_res = requests.get(url_status, headers=headers, timeout=30)
@@ -263,12 +264,14 @@ def process_with_mineru(file_bytes, file_name, file_type, api_key):
                     found_json, images_dict = extract_zip_and_get_data(r_zip.content)
                     return found_json, "", images_dict
             elif data.get("state") == "failed":
-                raise Exception("MinerU xử lý thất bại hoặc Token hết hạn.")
+                raise Exception("MinerU xử lý thất bại hoặc Token hết hạn (A0211).")
     raise Exception("MinerU timeout.")
 
 def process_with_gemini(file_bytes, file_name, file_type, api_key, model_name):
     if not GEMINI_AVAILABLE:
         raise Exception("Chưa cài đặt google-genai.")
+    # Sử dụng os.environ để truyền key trực tiếp tránh lỗi UNAUTHENTICATED của SDK mới
+    os.environ["GEMINI_API_KEY"] = api_key
     client = genai.Client(api_key=api_key)
     response = client.models.generate_content(
         model=model_name,
@@ -421,7 +424,7 @@ with tab1:
             f_name = pipeline_file.name
             f_type = pipeline_file.type
             
-            # Lưu key ra biến cục bộ trước khi truyền vào ThreadPool để tránh lỗi context st.session_state
+            # Lưu key ra biến cục bộ an toàn trước khi chạy ThreadPool
             k_mistral = st.session_state.saved_mistral_key
             k_docling = st.session_state.saved_docling_key
             k_mineru = st.session_state.saved_mineru_key
