@@ -7,6 +7,7 @@ import zipfile
 import time
 import tempfile
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from bs4 import BeautifulSoup
 import requests
 import streamlit as st
@@ -79,7 +80,7 @@ DEFAULT_MINERU_KEY = saved_config.get("mineru_key", "sk-IDb81Oj2W6pHrODooHN0xtKT
 DEFAULT_GEMINI_KEY = saved_config.get("gemini_key", "AQ.Ab8RN6IiVh_ufztKik5rSMrl39c-U6_L6v5oy_Qru1-YNUBdRg")
 
 # --- CẤU HÌNH GIAO DIỆN ---
-st.set_page_config(page_title="p2w.py - Multi-AI Document Suite", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="p2w.py - Multi-AI Concurrent Suite", page_icon="⚡", layout="wide")
 MINERU_BASE_URL = "https://mineru.net"
 
 # --- KHỞI TẠO SESSION STATE CHO EDIT KEY ---
@@ -88,28 +89,28 @@ if "docling_key_editable" not in st.session_state: st.session_state.docling_key_
 if "mineru_key_editable" not in st.session_state: st.session_state.mineru_key_editable = False
 if "gemini_key_editable" not in st.session_state: st.session_state.gemini_key_editable = False
 
-if "active_json" not in st.session_state: st.session_state.active_json = None
-if "active_images_dict" not in st.session_state: st.session_state.active_images_dict = {}
-if "active_file_name" not in st.session_state: st.session_state.active_file_name = "Document"
-if "active_preview_markdown" not in st.session_state: st.session_state.active_preview_markdown = ""
-
-# Lưu trữ Key vào Session State
 if "saved_mistral_key" not in st.session_state: st.session_state.saved_mistral_key = DEFAULT_MISTRAL_KEY
 if "saved_docling_key" not in st.session_state: st.session_state.saved_docling_key = DEFAULT_DOCLING_KEY
 if "saved_mineru_key" not in st.session_state: st.session_state.saved_mineru_key = DEFAULT_MINERU_KEY
 if "saved_gemini_key" not in st.session_state: st.session_state.saved_gemini_key = DEFAULT_GEMINI_KEY
 
-# Lưu trữ kết quả của 4 AI độc lập phục vụ 4 khung preview
 if "ai_results" not in st.session_state:
     st.session_state.ai_results = {
-        "Mistral": {"md": "", "imgs": {}},
-        "Docling": {"md": "", "imgs": {}},
-        "MinerU": {"md": "", "imgs": {}},
-        "Gemini Pro": {"md": "", "imgs": {}}
+        "Mistral": {"json": None, "md": "", "imgs": {}, "name": "Document"},
+        "Docling": {"json": None, "md": "", "imgs": {}, "name": "Document"},
+        "MinerU": {"json": None, "md": "", "imgs": {}, "name": "Document"},
+        "Gemini Pro": {"json": None, "md": "", "imgs": {}, "name": "Document"}
     }
 
 
 # --- CÁC HÀM XỬ LÝ DÙNG CHUNG ---
+def clean_and_wrap_latex(latex_str):
+    if not latex_str: return ""
+    clean_str = latex_str.strip()
+    if clean_str.startswith("$") and clean_str.endswith("$"):
+        clean_str = clean_str[1:-1].strip()
+    return f"${clean_str}$"
+
 def extract_zip_and_get_data(zip_bytes):
     images_dict = {}
     json_data = {}
@@ -124,29 +125,45 @@ def extract_zip_and_get_data(zip_bytes):
                     log_error(f"Lỗi đọc JSON từ ZIP: {e}")
     return json_data, images_dict
 
-def generate_pandoc_docx(md_text, images_dict):
+def generate_pandoc_docx(data, images_dict):
+    md_text = ""
+    if isinstance(data, dict):
+        md_lines = []
+        pages = data.get("pdf_info", [])
+        for page in pages:
+            if not isinstance(page, dict): continue
+            for block in page.get("para_blocks", page.get("blocks", [])):
+                if not isinstance(block, dict): continue
+                b_type = block.get("type")
+                if b_type in ["text", "title"]:
+                    p_text = ""
+                    for line in block.get("lines", []):
+                        for span in line.get("spans", []):
+                            content = span.get("content", span.get("text", ""))
+                            if span.get("type") == "inline_equation":
+                                p_text += f" {clean_and_wrap_latex(content)} "
+                            else:
+                                p_text += content
+                    if p_text.strip():
+                        md_lines.append(p_text.strip() + "\n\n")
+        md_text = "".join(md_lines)
+    else:
+        md_text = str(data)
+
     with tempfile.TemporaryDirectory() as tmp_dir:
         temp_md_path = os.path.join(tmp_dir, "temp_input.md")
         with open(temp_md_path, "w", encoding="utf-8") as f:
             f.write(md_text)
-        
         for img_name, img_bytes in images_dict.items():
             with open(os.path.join(tmp_dir, img_name), "wb") as img_f:
                 img_f.write(img_bytes)
-                
         original_dir = os.getcwd()
         os.chdir(tmp_dir)
         try:
             output_docx = "Output_Native.docx"
-            pypandoc.convert_file(
-                "temp_input.md", 
-                'docx', 
-                outputfile=output_docx, 
-                extra_args=['--standalone', '--extract-media=.']
-            )
+            pypandoc.convert_file("temp_input.md", 'docx', outputfile=output_docx, extra_args=['--standalone', '--extract-media=.'])
             with open(output_docx, "rb") as f:
-                docx_bytes = f.read()
-            return docx_bytes
+                return f.read()
         except Exception as e:
             log_error(f"Lỗi tạo Word Pandoc: {e}")
             return None
@@ -154,21 +171,18 @@ def generate_pandoc_docx(md_text, images_dict):
             os.chdir(original_dir)
 
 
-# --- XỬ LÝ 4 AI RIÊNG BIỆT ---
-def process_with_mistral_api(uploaded_file, api_key):
+# --- XỬ LÝ 4 AI ĐỘC LẬP ---
+def process_with_mistral(file_bytes, file_name, file_type, api_key):
     if not MISTRAL_AVAILABLE:
-        raise Exception("Chưa cài đặt thư viện mistralai.")
+        raise Exception("Chưa cài đặt mistralai SDK.")
     client = Mistral(api_key=api_key)
-    file_bytes = uploaded_file.getvalue()
     base64_file = base64.b64encode(file_bytes).decode('utf-8')
-
     ocr_response = client.ocr.process(
-        document={"type": "document_url", "document_url": f"data:application/pdf;base64,{base64_file}"},
+        document={"type": "document_url", "document_url": f"data:{file_type};base64,{base64_file}"},
         model="mistral-ocr-latest",
         include_image_base64=True,
         include_blocks=True
     )
-    
     full_markdown = ""
     images_dict = {}
     if hasattr(ocr_response, "pages"):
@@ -184,38 +198,30 @@ def process_with_mistral_api(uploaded_file, api_key):
                         try:
                             images_dict[img_id if img_id.lower().endswith((".jpeg", ".jpg", ".png")) else f"{img_id}.jpeg"] = base64.b64decode(img_b64)
                         except: pass
-    return full_markdown, images_dict
+    return None, full_markdown, images_dict
 
-def process_with_docling_api(uploaded_file, api_key):
-    # Cấu hình chuẩn theo tài liệu Docling SaaS Developer
+def process_with_docling(file_bytes, file_name, file_type, api_key):
     url = "https://developer.dcls.saas.ibm.com/v1/convert"
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
-    files = {"file": (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type)}
-    
+    files = {"file": (file_name, file_bytes, file_type)}
     try:
         response = requests.post(url, headers=headers, files=files, timeout=60, verify=True)
     except:
-        # Fallback nếu gặp lỗi chứng chỉ SSL trên môi trường mạng cụ thể
         response = requests.post(url, headers=headers, files=files, timeout=60, verify=False)
         
     if response.status_code == 200:
         res_json = response.json()
-        return res_json.get("markdown", "# Docling Output\n\n" + str(res_json)), {}
+        md = res_json.get("markdown", "# Docling Output\n\n" + str(res_json))
+        return None, md, {}
     else:
         raise Exception(f"Docling API Error: {response.status_code} - {response.text}")
 
-def process_with_mineru_api(uploaded_file, api_key):
+def process_with_mineru(file_bytes, file_name, file_type, api_key):
     upload_url = "https://tmpfiles.org/api/v1/upload"
-    file_bytes = uploaded_file.getvalue()
-    file_name = uploaded_file.name
-    file_type = uploaded_file.type
-    
     res = requests.post(upload_url, files={"file": (file_name, file_bytes, file_type)}, timeout=30)
     if res.status_code != 200:
         raise Exception("Không thể upload file trung gian cho MinerU.")
-    
-    res_json = res.json()
-    file_url = res_json.get("data", {}).get("url", "")
+    file_url = res.json().get("data", {}).get("url", "")
     if "tmpfiles.org/" in file_url and not "tmpfiles.org/dl/" in file_url:
         file_url = file_url.replace("tmpfiles.org/", "tmpfiles.org/dl/")
 
@@ -238,61 +244,46 @@ def process_with_mineru_api(uploaded_file, api_key):
                 r_zip = requests.get(data.get("full_zip_url"))
                 if r_zip.status_code == 200:
                     found_json, images_dict = extract_zip_and_get_data(r_zip.content)
-                    return f"# MinerU kết quả cho {file_name}\n\n(Đã trích xuất cấu trúc thành công qua MinerU)", images_dict
+                    return found_json, "", images_dict
             elif data.get("state") == "failed":
                 raise Exception("MinerU xử lý thất bại hoặc Token hết hạn.")
     raise Exception("MinerU timeout.")
 
-def process_with_gemini_api(uploaded_file, api_key, model_name):
+def process_with_gemini(file_bytes, file_name, file_type, api_key, model_name):
     if not GEMINI_AVAILABLE:
-        raise Exception("Chưa cài đặt thư viện google-genai.")
+        raise Exception("Chưa cài đặt google-genai.")
     client = genai.Client(api_key=api_key)
     response = client.models.generate_content(
         model=model_name,
         contents=[
-            types.Part.from_bytes(data=uploaded_file.getvalue(), mime_type=uploaded_file.type),
-            "Hãy đọc tài liệu này chính xác tuyệt đối. Biểu thức toán học đặt trong cặp dấu đô la ($...$). Trình bày Markdown sạch sẽ."
+            types.Part.from_bytes(data=file_bytes, mime_type=file_type),
+            "Hãy đọc tài liệu này chính xác tuyệt đối. Biểu thức toán học đặt trong cặp đô la ($...$). Trình bày Markdown sạch sẽ."
         ]
     )
-    return response.text, {}
+    return None, response.text, {}
 
 
-# --- HÀM HIỂN THỊ KHUNG PREVIEW & CÁC NÚT TẢI WORD CHO TỪNG AI ---
-def render_preview_and_download_options(markdown_content, images_dict, file_name, ai_label="AI"):
-    if not markdown_content:
-        st.info(f"Chưa có dữ liệu kết quả từ **{ai_label}**.")
-        return
-        
-    st.markdown(f"### 👁️ Xem trước kết quả trích xuất từ: `{ai_label}`")
-    docx_bytes = generate_pandoc_docx(markdown_content, images_dict)
+# --- HÀM RENDER PREVIEW BOX ---
+def render_ai_preview_box(ai_label, json_data, markdown_text, images_dict, file_name):
+    st.subheader(f"📊 Kết quả đồng thời từ: `{ai_label}`")
     
-    col_b1, col_b2, col_b3 = st.columns(3)
-    with col_b1:
-        if docx_bytes:
-            st.download_button(f"📥 Tải Word (Pandoc Native) [{ai_label}]", docx_bytes, f"{file_name}_{ai_label}_Pandoc.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", type="primary", use_container_width=True, key=f"dl_pandoc_{ai_label}")
-        else:
-            st.button(f"📥 Tải Word (Pandoc Native) [{ai_label}]", disabled=True, use_container_width=True, key=f"dl_pandoc_dis_{ai_label}")
-    with col_b2:
-        if docx_bytes:
-            st.download_button(f"📥 Tải Word (Preview / Thô) [{ai_label}]", docx_bytes, f"{file_name}_{ai_label}_Preview.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", use_container_width=True, key=f"dl_prev_{ai_label}")
-        else:
-            st.button(f"📥 Tải Word (Preview / Thô) [{ai_label}]", disabled=True, use_container_width=True, key=f"dl_prev_dis_{ai_label}")
-    with col_b3:
-        st.download_button(f"📥 Tải File Markdown (.md) [{ai_label}]", markdown_content, f"{file_name}_{ai_label}.md", "text/markdown", use_container_width=True, key=f"dl_md_{ai_label}")
+    data_source = json_data if json_data else markdown_text
+    docx_bytes = generate_pandoc_docx(data_source, images_dict) if data_source else None
 
-    def replace_img_smart_html(match):
-        alt_text = match.group(1)
-        target_name = os.path.basename(match.group(2))
-        matched_bytes = images_dict.get(target_name)
-        if matched_bytes:
-            b64_data = base64.b64encode(matched_bytes).decode('utf-8')
-            return f'<div style="text-align: center; margin: 20px 0;"><img src="data:image/jpeg;base64,{b64_data}" style="max-width: 450px; border-radius: 8px;" alt="{alt_text}" /></div>'
-        return match.group(0)
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        if docx_bytes:
+            st.download_button(f"📥 Tải Word (Pandoc) [{ai_label}]", docx_bytes, f"{file_name}_{ai_label}.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", type="primary", use_container_width=True, key=f"dl_{ai_label}")
+    with col2:
+        if markdown_text or json_data:
+            md_dl = markdown_text if markdown_text else json.dumps(json_data, ensure_ascii=False, indent=2)
+            st.download_button(f"📥 Tải File (.md/.json) [{ai_label}]", md_dl, f"{file_name}_{ai_label}.txt", "text/plain", use_container_width=True, key=f"dl_md_{ai_label}")
+    with col3:
+        if json_data:
+            st.download_button(f"📥 Tải JSON [{ai_label}]", json.dumps(json_data, ensure_ascii=False, indent=2), f"{file_name}_{ai_label}.json", "application/json", use_container_width=True, key=f"dl_json_{ai_label}")
 
-    processed_html = re.sub(r'!\[(.*?)\]\((.*?)\)', replace_img_smart_html, markdown_content)
-    
-    unique_key = f"preview_{ai_label.lower().replace(' ', '_')}"
-    preview_component_html = f"""
+    content_to_render = markdown_text if markdown_text else json.dumps(json_data, ensure_ascii=False, indent=2)
+    preview_html = f"""
     <!DOCTYPE html>
     <html>
     <head>
@@ -303,24 +294,24 @@ def render_preview_and_download_options(markdown_content, images_dict, file_name
         <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
         <style>
             body {{ font-family: Arial, sans-serif; padding: 10px; background: #fff; color: #2d3748; }}
-            .btn-action {{ padding: 10px 20px; color: white; background: #2b6cb0; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; margin-bottom: 15px; }}
-            .preview-card {{ background: #fff; padding: 30px; border-radius: 10px; border: 1px solid #cbd5e0; max-height: 500px; overflow-y: auto; line-height: 1.8; }}
+            .btn-action {{ padding: 8px 16px; color: white; background: #2b6cb0; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; margin-bottom: 10px; }}
+            .preview-card {{ background: #fff; padding: 20px; border-radius: 8px; border: 1px solid #cbd5e0; max-height: 450px; overflow-y: auto; line-height: 1.6; }}
         </style>
     </head>
     <body>
-        <button class="btn-action" onclick="copyContentToClipboard_{unique_key}()">📋 Sao chép nhanh [{ai_label}] (Dán vào Word)</button>
-        <div class="preview-card" id="content-to-copy_{unique_key}"></div>
+        <button class="btn-action" onclick="copyContent()">📋 Sao chép nhanh [{ai_label}] (Dán Word)</button>
+        <div class="preview-card" id="box_{ai_label}"></div>
         <script>
-        document.getElementById('content-to-copy_{unique_key}').innerHTML = marked.parse({json.dumps(processed_html)});
+        document.getElementById('box_{ai_label}').innerHTML = marked.parse({json.dumps(content_to_render)});
         setTimeout(() => {{
-            renderMathInElement(document.getElementById('content-to-copy_{unique_key}'), {{
+            renderMathInElement(document.getElementById('box_{ai_label}'), {{
                 delimiters: [{{left: '$$', right: '$$', display: true}}, {{left: '$', right: '$', display: false}}],
                 throwOnError: false
             }});
         }}, 300);
-        function copyContentToClipboard_{unique_key}() {{
+        function copyContent() {{
             const range = document.createRange();
-            range.selectNode(document.getElementById('content-to-copy_{unique_key}'));
+            range.selectNode(document.getElementById('box_{ai_label}'));
             window.getSelection().removeAllRanges();
             window.getSelection().addRange(range);
             document.execCommand('copy');
@@ -331,158 +322,142 @@ def render_preview_and_download_options(markdown_content, images_dict, file_name
     </body>
     </html>
     """
-    components.html(preview_component_html, height=600, scrolling=False)
+    components.html(preview_html, height=550, scrolling=False)
 
 
-# --- 5. GIAO DIỆN CHÍNH (2 TABS) ---
-st.title("⚡ p2w.py - Nền tảng Chuyển đổi & Xử lý Tài liệu Đa AI")
+# --- GIAO DIỆN CHÍNH (2 TABS) ---
+st.title("⚡ p2w.py - Nền tảng Xử lý Đồng thời Đa AI")
+st.write("Hệ thống gửi tệp tài liệu chạy **đồng thời song song** qua **Mistral**, **Docling**, **MinerU** và **Gemini Pro**.")
 
 tab1, tab2 = st.tabs([
-    "🚀 Tab 1: Xử lý AI Pipeline (4 Khung Preview Độc Lập)", 
+    "🚀 Tab 1: Chạy Đồng Thời 4 AI & 4 Khung Preview", 
     "📦 Tab 2: Quản lý & Dựng Word từ ZIP, JSON, Markdown và Ảnh"
 ])
 
 # ==========================================
-# TAB 1: XỬ LÝ AI PIPELINE (MISTRAL, DOCLING, MINERU, GEMINI)
+# TAB 1: XỬ LÝ ĐỒNG THỜI 4 AI PIPELINE
 # ==========================================
 with tab1:
     st.subheader("🔑 Quản lý API Keys (Nhập, Đổi và Lưu an toàn)")
-    
     col_k1, col_k2 = st.columns(2)
+    
     with col_k1:
-        # Mistral Key
-        m_key = st.text_input("Mistral API Key (Chính):", value=st.session_state.saved_mistral_key, type="password", disabled=not st.session_state.mistral_key_editable)
-        col_mk1, col_mk2 = st.columns(2)
-        with col_mk1:
-            if st.button("Đổi Mistral Key", key="btn_edit_mistral"):
-                st.session_state.mistral_key_editable = True
-                st.rerun()
-        with col_mk2:
-            if st.session_state.mistral_key_editable and st.button("Lưu Mistral Key", key="btn_save_mistral"):
+        m_key = st.text_input("Mistral API Key:", value=st.session_state.saved_mistral_key, type="password", disabled=not st.session_state.mistral_key_editable)
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("Đổi Mistral Key", key="b_ed_m"): st.session_state.mistral_key_editable = True; st.rerun()
+        with c2:
+            if st.session_state.mistral_key_editable and st.button("Lưu Mistral Key", key="b_sv_m"):
                 st.session_state.saved_mistral_key = m_key
                 save_config(st.session_state.saved_mistral_key, st.session_state.saved_docling_key, st.session_state.saved_mineru_key, st.session_state.saved_gemini_key)
                 st.session_state.mistral_key_editable = False
-                st.success("Đã lưu Mistral Key!")
+                st.success("Đã lưu!")
                 st.rerun()
 
-        # Docling Key
-        d_key = st.text_input("Docling API Key (Tham khảo https://developer.dcls.saas.ibm.com/):", value=st.session_state.saved_docling_key, type="password", disabled=not st.session_state.docling_key_editable)
-        col_dk1, col_dk2 = st.columns(2)
-        with col_dk1:
-            if st.button("Đổi Docling Key", key="btn_edit_docling"):
-                st.session_state.docling_key_editable = True
-                st.rerun()
-        with col_dk2:
-            if st.session_state.docling_key_editable and st.button("Lưu Docling Key", key="btn_save_docling"):
+        d_key = st.text_input("Docling API Key:", value=st.session_state.saved_docling_key, type="password", disabled=not st.session_state.docling_key_editable)
+        c3, c4 = st.columns(2)
+        with c3:
+            if st.button("Đổi Docling Key", key="b_ed_d"): st.session_state.docling_key_editable = True; st.rerun()
+        with c4:
+            if st.session_state.docling_key_editable and st.button("Lưu Docling Key", key="b_sv_d"):
                 st.session_state.saved_docling_key = d_key
                 save_config(st.session_state.saved_mistral_key, st.session_state.saved_docling_key, st.session_state.saved_mineru_key, st.session_state.saved_gemini_key)
                 st.session_state.docling_key_editable = False
-                st.success("Đã lưu Docling Key!")
+                st.success("Đã lưu!")
                 st.rerun()
 
     with col_k2:
-        # MinerU Key
         mi_key = st.text_input("MinerU API Key:", value=st.session_state.saved_mineru_key, type="password", disabled=not st.session_state.mineru_key_editable)
-        col_mik1, col_mik2 = st.columns(2)
-        with col_mik1:
-            if st.button("Đổi MinerU Key", key="btn_edit_mineru"):
-                st.session_state.mineru_key_editable = True
-                st.rerun()
-        with col_mik2:
-            if st.session_state.mineru_key_editable and st.button("Lưu MinerU Key", key="btn_save_mineru"):
+        c5, c6 = st.columns(2)
+        with c5:
+            if st.button("Đổi MinerU Key", key="b_ed_mi"): st.session_state.mineru_key_editable = True; st.rerun()
+        with c6:
+            if st.session_state.mineru_key_editable and st.button("Lưu MinerU Key", key="b_sv_mi"):
                 st.session_state.saved_mineru_key = mi_key
                 save_config(st.session_state.saved_mistral_key, st.session_state.saved_docling_key, st.session_state.saved_mineru_key, st.session_state.saved_gemini_key)
                 st.session_state.mineru_key_editable = False
-                st.success("Đã lưu MinerU Key!")
+                st.success("Đã lưu!")
                 st.rerun()
 
-        # Gemini Key
-        g_key = st.text_input("Gemini Pro API Key:", value=st.session_state.saved_gemini_key, type="password", disabled=not st.session_state.gemini_key_editable)
-        col_gk1, col_gk2 = st.columns(2)
-        with col_gk1:
-            if st.button("Đổi Gemini Key", key="btn_edit_gemini"):
-                st.session_state.gemini_key_editable = True
-                st.rerun()
-        with col_gk2:
-            if st.session_state.gemini_key_editable and st.button("Lưu Gemini Key", key="btn_save_gemini"):
+        g_key = st.text_input("Gemini API Key:", value=st.session_state.saved_gemini_key, type="password", disabled=not st.session_state.gemini_key_editable)
+        c7, c8 = st.columns(2)
+        with c7:
+            if st.button("Đổi Gemini Key", key="b_ed_g"): st.session_state.gemini_key_editable = True; st.rerun()
+        with c8:
+            if st.session_state.gemini_key_editable and st.button("Lưu Gemini Key", key="b_sv_g"):
                 st.session_state.saved_gemini_key = g_key
                 save_config(st.session_state.saved_mistral_key, st.session_state.saved_docling_key, st.session_state.saved_mineru_key, st.session_state.saved_gemini_key)
                 st.session_state.gemini_key_editable = False
-                st.success("Đã lưu Gemini Key!")
+                st.success("Đã lưu!")
                 st.rerun()
 
     st.divider()
-    st.subheader("📤 Tải lên tài liệu để xử lý qua Hệ thống 4 AI song song/tuần tự")
-    pipeline_file = st.file_uploader("Chọn file tài liệu (PDF, Ảnh)", type=["pdf", "png", "jpg", "jpeg"], key="tab1_file_upload")
-    selected_gemini_model = st.selectbox("Chọn Model Gemini cụ thể:", ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-1.5-flash", "gemini-1.5-pro"], index=0)
+    selected_gemini_model = st.selectbox("Chọn Model Gemini:", ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-1.5-flash", "gemini-1.5-pro"], index=0)
+    pipeline_file = st.file_uploader("📥 Tải file tài liệu (PDF, Ảnh) để chạy đồng thời 4 AI", type=["pdf", "png", "jpg", "jpeg"], key="tab1_upload")
 
-    if st.button("🚀 Chạy Tất Cả 4 AI Pipeline", type="primary"):
+    if st.button("🚀 Chạy Đồng Thời Cả 4 AI Pipeline", type="primary"):
         if not pipeline_file:
-            st.warning("Vui lòng tải lên file tài liệu!")
+            st.warning("Vui lòng tải lên file!")
         else:
             base_name = pipeline_file.name.rsplit(".", 1)[0]
-            st.session_state.active_file_name = base_name
+            f_bytes = pipeline_file.getvalue()
+            f_name = pipeline_file.name
+            f_type = pipeline_file.type
             
-            ai_tasks = [
-                ("Mistral", st.session_state.saved_mistral_key, process_with_mistral_api),
-                ("Docling", st.session_state.saved_docling_key, process_with_docling_api),
-                ("MinerU", st.session_state.saved_mineru_key, process_with_mineru_api),
-                ("Gemini Pro", st.session_state.saved_gemini_key, lambda f, k: process_with_gemini_api(f, k, selected_gemini_model))
-            ]
+            tasks = {
+                "Mistral": lambda: process_with_mistral(f_bytes, f_name, f_type, st.session_state.saved_mistral_key),
+                "Docling": lambda: process_with_docling(f_bytes, f_name, f_type, st.session_state.saved_docling_key),
+                "MinerU": lambda: process_with_mineru(f_bytes, f_name, f_type, st.session_state.saved_mineru_key),
+                "Gemini Pro": lambda: process_with_gemini(f_bytes, f_name, f_type, st.session_state.saved_gemini_key, selected_gemini_model)
+            }
 
-            for ai_name, key_val, func in ai_tasks:
-                with st.spinner(f"Đang xử lý tài liệu qua mô hình: {ai_name}..."):
-                    try:
-                        log_info(f"Thực thi trích xuất qua {ai_name}")
-                        md_res, img_res = func(pipeline_file, key_val)
-                        st.session_state.ai_results[ai_name]["md"] = md_res
-                        st.session_state.ai_results[ai_name]["imgs"] = img_res
-                        st.success(f"✅ {ai_name} hoàn thành trích xuất!")
-                    except Exception as e:
-                        err_msg = f"Lỗi xử lý qua {ai_name}: {str(e)}"
-                        log_error(err_msg)
-                        st.session_state.ai_results[ai_name]["md"] = f"# Lỗi trích xuất từ {ai_name}\n\n> {err_msg}"
-                        st.session_state.ai_results[ai_name]["imgs"] = {}
-                        st.warning(err_msg)
+            with st.spinner("⏳ Đang gửi file và thực thi ĐỒNG THỜI qua 4 mô hình AI (Vui lòng đợi trong giây lát)..."):
+                with ThreadPoolExecutor(max_workers=4) as executor:
+                    future_to_ai = {executor.submit(task_func): ai_name for ai_name, task_func in tasks.items()}
+                    
+                    for future in as_completed(future_to_ai):
+                        ai_name = future_to_ai[future]
+                        try:
+                            json_res, md_res, img_res = future.result()
+                            st.session_state.ai_results[ai_name] = {
+                                "json": json_res,
+                                "md": md_res,
+                                "imgs": img_res,
+                                "name": base_name
+                            }
+                            log_info(f"AI {ai_name} hoàn thành đồng thời.")
+                        except Exception as e:
+                            err_msg = f"Lỗi xử lý: {str(e)}"
+                            log_error(f"Lỗi AI {ai_name}: {err_msg}")
+                            st.session_state.ai_results[ai_name] = {
+                                "json": None,
+                                "md": f"# Lỗi xử lý từ {ai_name}\n\n> {err_msg}",
+                                "imgs": {},
+                                "name": base_name
+                            }
 
-            st.success("🎉 Đã hoàn tất chuỗi xử lý AI Pipeline!")
+            st.success("🎉 Đã hoàn tất xử lý đồng thời qua 4 AI Pipeline!")
             st.rerun()
 
-    # HIỂN THỊ 4 KHUNG PREVIEW ĐỘC LẬP TƯƠNG TỨNG VỚI 4 AI
-    if any(res["md"] for res in st.session_state.ai_results.values()):
+    # HIỂN THỊ 4 KHUNG PREVIEW ĐỘC LẬP CHẠY ĐỒNG THỜI
+    if any(res["json"] or res["md"] for res in st.session_state.ai_results.values()):
         st.divider()
-        st.subheader("📊 Kết quả so sánh & Khung Preview độc lập của 4 AI")
+        st.subheader("📊 Kết quả so sánh & Khung Preview độc lập đồng thời của 4 AI")
         
-        tab_m, tab_d, tab_mi, tab_g = st.tabs(["🌪️ Mistral OCR", "📄 Docling", "📐 MinerU", "✨ Gemini Pro"])
+        t_m, t_d, t_mi, t_g = st.tabs(["🌪️ Mistral OCR", "📄 Docling", "📐 MinerU", "✨ Gemini Pro"])
         
-        with tab_m:
-            render_preview_and_download_options(
-                st.session_state.ai_results["Mistral"]["md"], 
-                st.session_state.ai_results["Mistral"]["imgs"], 
-                st.session_state.active_file_name, 
-                "Mistral"
-            )
-        with tab_d:
-            render_preview_and_download_options(
-                st.session_state.ai_results["Docling"]["md"], 
-                st.session_state.ai_results["Docling"]["imgs"], 
-                st.session_state.active_file_name, 
-                "Docling"
-            )
-        with tab_mi:
-            render_preview_and_download_options(
-                st.session_state.ai_results["MinerU"]["md"], 
-                st.session_state.ai_results["MinerU"]["imgs"], 
-                st.session_state.active_file_name, 
-                "MinerU"
-            )
-        with tab_g:
-            render_preview_and_download_options(
-                st.session_state.ai_results["Gemini Pro"]["md"], 
-                st.session_state.ai_results["Gemini Pro"]["imgs"], 
-                st.session_state.active_file_name, 
-                "Gemini Pro"
-            )
+        with t_m:
+            res = st.session_state.ai_results["Mistral"]
+            render_ai_preview_box("Mistral", res["json"], res["md"], res["imgs"], res["name"])
+        with t_d:
+            res = st.session_state.ai_results["Docling"]
+            render_ai_preview_box("Docling", res["json"], res["md"], res["imgs"], res["name"])
+        with t_mi:
+            res = st.session_state.ai_results["MinerU"]
+            render_ai_preview_box("MinerU", res["json"], res["md"], res["imgs"], res["name"])
+        with t_g:
+            res = st.session_state.ai_results["Gemini Pro"]
+            render_ai_preview_box("Gemini Pro", res["json"], res["md"], res["imgs"], res["name"])
 
 
 # ==========================================
@@ -490,8 +465,6 @@ with tab1:
 # ==========================================
 with tab2:
     st.subheader("📦 Quản lý file đầu vào: ZIP, JSON, Markdown và Ảnh")
-    st.write("Tải lên các gói file hoặc tệp ảnh riêng lẻ để dựng file Word và xem trước.")
-    
     col_u1, col_u2 = st.columns(2)
     with col_u1:
         package_file = st.file_uploader("📥 Tải lên gói tệp (ZIP, JSON hoặc Markdown)", type=["zip", "json", "md", "markdown"], key="tab2_pkg")
@@ -507,40 +480,30 @@ with tab2:
             if file_ext == "zip":
                 found_json, zip_imgs = extract_zip_and_get_data(package_file.getvalue())
                 tab2_imgs_dict.update(zip_imgs)
-                with zipfile.ZipFile(io.BytesIO(package_file.getvalue())) as z:
-                    for name in z.namelist():
-                        if name.endswith(".md"):
-                            st.session_state.active_preview_markdown = z.read(name).decode("utf-8")
-                            break
-                st.session_state.active_images_dict = tab2_imgs_dict
-                st.session_state.active_file_name = file_base
-                st.success("Đã nạp gói ZIP thành công!")
+                st.session_state.ai_results["MinerU"] = {"json": found_json, "md": "", "imgs": tab2_imgs_dict, "name": file_base}
+                st.success("Đã nạp gói ZIP thành công vào hệ thống quản lý!")
                 st.rerun()
             elif file_ext == "json":
                 json_content = json.loads(package_file.getvalue().decode("utf-8"))
-                st.session_state.active_images_dict = tab2_imgs_dict
-                st.session_state.active_file_name = file_base
-                st.session_state.active_preview_markdown = f"# Dữ liệu JSON: {file_base}\n\n```json\n" + json.dumps(json_content, ensure_ascii=False, indent=2) + "\n```"
+                st.session_state.ai_results["MinerU"] = {"json": json_content, "md": "", "imgs": tab2_imgs_dict, "name": file_base}
                 st.success("Đã nạp file JSON thành công!")
                 st.rerun()
             elif file_ext in ["md", "markdown"]:
-                st.session_state.active_preview_markdown = package_file.getvalue().decode("utf-8")
-                st.session_state.active_images_dict = tab2_imgs_dict
-                st.session_state.active_file_name = file_base
+                md_content = package_file.getvalue().decode("utf-8")
+                st.session_state.ai_results["Mistral"] = {"json": None, "md": md_content, "imgs": tab2_imgs_dict, "name": file_base}
                 st.success("Đã nạp file Markdown thành công!")
                 st.rerun()
         except Exception as e:
-            log_error(f"Lỗi khi xử lý file tải lên ở Tab 2: {e}")
+            log_error(f"Lỗi khi đọc file ở Tab 2: {e}")
             st.error(f"Lỗi khi đọc file: {e}")
 
-    if st.session_state.active_preview_markdown:
-        st.divider()
-        render_preview_and_download_options(
-            st.session_state.active_preview_markdown, 
-            st.session_state.active_images_dict, 
-            st.session_state.active_file_name,
-            "Quản lý Workspace"
-        )
+    st.divider()
+    res_m = st.session_state.ai_results["Mistral"]
+    res_mu = st.session_state.ai_results["MinerU"]
+    if res_m["md"]:
+        render_ai_preview_box("Workspace Mistral", None, res_m["md"], res_m["imgs"], res_m["name"])
+    if res_mu["json"]:
+        render_ai_preview_box("Workspace MinerU", res_mu["json"], "", res_mu["imgs"], res_mu["name"])
 
 # --- XEM NHẬT KÝ HỆ THỐNG ---
 st.divider()
