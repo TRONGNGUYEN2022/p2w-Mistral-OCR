@@ -64,8 +64,7 @@ def load_mistral_keys_from_file():
     if os.path.exists(MISTRAL_KEY_FILE):
         try:
             with open(MISTRAL_KEY_FILE, "r", encoding="utf-8") as f:
-                content = f.read()
-                return content
+                return f.read()
         except:
             pass
     return "Asht2uDLjH8WTWnU06dBWdPbpcVQrbt5"
@@ -121,13 +120,24 @@ if "ai_results" not in st.session_state:
     }
 
 
-# --- CÁC HÀM XỬ LÝ LÀM SẠCH LATEX & PREVIEW ---
+# --- CÁC HÀM LÀM SẠCH LATEX & PREVIEW THÔNG MINH ---
 def clean_markdown_for_preview(md_text):
     if not md_text:
         return ""
+    # Tránh lỗi ký tự % làm hỏng công thức
     cleaned = re.sub(r'(\d+)%', r'\1\\%', md_text)
+    
+    # Tự động bọc các biểu thức LaTeX đơn lẻ chưa có dấu $ vào trong $...$
+    def wrap_math_inline(match):
+        content = match.group(0).strip()
+        if content and not (content.startswith('$') and content.endswith('$')):
+            return f"${content}$"
+        return content
+
+    # Chuẩn hóa hệ phương trình cases
     cleaned = re.sub(r'\\begin\{cases\}', r'$$\\begin{cases}', cleaned)
     cleaned = re.sub(r'\\end\{cases\}', r'\\end{cases}$$', cleaned)
+    
     return cleaned
 
 def clean_and_wrap_latex(latex_str):
@@ -204,7 +214,6 @@ def process_with_mistral_with_rotation(file_bytes, file_name, file_type, raw_key
     if not MISTRAL_AVAILABLE:
         raise Exception("Chưa cài đặt mistralai SDK.")
     
-    # Tách danh sách key theo xuống dòng hoặc dấu phẩy
     key_list = [k.strip() for k in re.split(r'[,\n]', raw_keys_str) if k.strip()]
     if not key_list:
         raise Exception("Không tìm thấy Mistral API Key hợp lệ.")
@@ -371,7 +380,12 @@ def render_ai_preview_box(ai_label, json_data, markdown_text, images_dict, file_
         document.getElementById('box_{ai_label}').innerHTML = marked.parse({json.dumps(content_to_render)});
         setTimeout(() => {{
             renderMathInElement(document.getElementById('box_{ai_label}'), {{
-                delimiters: [{{left: '$$', right: '$$', display: true}}, {{left: '$', right: '$', display: false}}],
+                delimiters: [
+                    {{left: '$$', right: '$$', display: true}},
+                    {{left: '$', right: '$', display: false}},
+                    {{left: '\\\\(', right: '\\\\)', display: false}},
+                    {{left: '\\\\[', right: '\\\\]', display: true}}
+                ],
                 throwOnError: false
             }});
         }}, 300);
@@ -393,7 +407,7 @@ def render_ai_preview_box(ai_label, json_data, markdown_text, images_dict, file_
 
 # --- GIAO DIỆN CHÍNH (2 TABS) ---
 st.title("⚡ p2w.py - Nền tảng Xử lý Đồng thời & Xoay vòng Key Đa AI")
-st.write("Hệ thống hỗ trợ chạy đồng thời/riêng lẻ qua **Mistral** (có tự động xoay vòng danh sách key từ `api_key_Mistral.txt`), **Docling**, **MinerU** và **Gemini Pro**.")
+st.write("Hệ thống hỗ trợ chạy đồng thời/riêng lẻ qua **Mistral** (xoay vòng key từ `api_key_Mistral.txt`), **Docling**, **MinerU** và **Gemini Pro**.")
 
 tab1, tab2 = st.tabs([
     "🚀 Tab 1: AI Pipeline (Xoay vòng Key Mistral & Điều khiển AI)", 
@@ -408,11 +422,10 @@ with tab1:
     col_k1, col_k2 = st.columns(2)
     
     with col_k1:
-        # Mistral Keys đọc từ file api_key_Mistral.txt
-        m_keys = st.text_area(
-            "Danh sách Mistral API Keys (Đọc/Lưu từ `api_key_Mistral.txt`, mỗi key 1 dòng):", 
+        m_keys = st.text_input(
+            "Danh sách Mistral API Keys (Đọc/Lưu từ `api_key_Mistral.txt`):", 
             value=st.session_state.saved_mistral_keys_raw, 
-            height=100,
+            type="password",
             disabled=not st.session_state.mistral_key_editable
         )
         c1, c2 = st.columns(2)
