@@ -84,7 +84,7 @@ st.set_page_config(page_title="p2w.py - Multi-AI Concurrent Suite", page_icon="�
 MINERU_BASE_URL = "https://mineru.net"
 DOCLING_BASE_URL = "https://api.aws-c1.dcls.saas.ibm.com/20260811-1219-1052-8050-3cf005cc005c"
 
-# --- KHỞI TẠO SESSION STATE CHO EDIT KEY ---
+# --- KHỞI TẠO SESSION STATE ĐẦY ĐỦ AN TOÀN ---
 if "mistral_key_editable" not in st.session_state: st.session_state.mistral_key_editable = False
 if "docling_key_editable" not in st.session_state: st.session_state.docling_key_editable = False
 if "mineru_key_editable" not in st.session_state: st.session_state.mineru_key_editable = False
@@ -202,7 +202,6 @@ def process_with_mistral(file_bytes, file_name, file_type, api_key):
     return None, full_markdown, images_dict
 
 def process_with_docling(file_bytes, file_name, file_type, api_key):
-    # Chuẩn xác theo tài liệu Docling SaaS API mới nhất (Async file upload, poll status, get result)
     url_convert = f"{DOCLING_BASE_URL}/v1/convert/file/async"
     headers = {"X-Api-Key": api_key} if api_key else {}
     files = {"files": (file_name, file_bytes, file_type)}
@@ -216,7 +215,6 @@ def process_with_docling(file_bytes, file_name, file_type, api_key):
     if not task_id:
         raise Exception(f"Không nhận được task_id từ Docling: {res_data}")
 
-    # Polling trạng thái
     for _ in range(40):
         time.sleep(5)
         url_status = f"{DOCLING_BASE_URL}/v1/status/poll/{task_id}"
