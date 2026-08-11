@@ -79,7 +79,7 @@ DEFAULT_MINERU_KEY = saved_config.get("mineru_key", "sk-IDb81Oj2W6pHrODooHN0xtKT
 DEFAULT_GEMINI_KEY = saved_config.get("gemini_key", "AQ.Ab8RN6IiVh_ufztKik5rSMrl39c-U6_L6v5oy_Qru1-YNUBdRg")
 
 # --- CẤU HÌNH GIAO DIỆN ---
-st.set_page_config(page_title="p2w.py - Mistral, Docling, MinerU & Gemini Pro Suite", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="p2w.py - Multi-AI Document Suite", page_icon="⚡", layout="wide")
 MINERU_BASE_URL = "https://mineru.net"
 
 # --- KHỞI TẠO SESSION STATE CHO EDIT KEY ---
@@ -98,6 +98,15 @@ if "saved_mistral_key" not in st.session_state: st.session_state.saved_mistral_k
 if "saved_docling_key" not in st.session_state: st.session_state.saved_docling_key = DEFAULT_DOCLING_KEY
 if "saved_mineru_key" not in st.session_state: st.session_state.saved_mineru_key = DEFAULT_MINERU_KEY
 if "saved_gemini_key" not in st.session_state: st.session_state.saved_gemini_key = DEFAULT_GEMINI_KEY
+
+# Lưu trữ kết quả của 4 AI độc lập phục vụ 4 khung preview
+if "ai_results" not in st.session_state:
+    st.session_state.ai_results = {
+        "Mistral": {"md": "", "imgs": {}},
+        "Docling": {"md": "", "imgs": {}},
+        "MinerU": {"md": "", "imgs": {}},
+        "Gemini Pro": {"md": "", "imgs": {}}
+    }
 
 
 # --- CÁC HÀM XỬ LÝ DÙNG CHUNG ---
@@ -145,7 +154,7 @@ def generate_pandoc_docx(md_text, images_dict):
             os.chdir(original_dir)
 
 
-# --- XỬ LÝ 4 AI PIPELINE ---
+# --- XỬ LÝ 4 AI RIÊNG BIỆT ---
 def process_with_mistral_api(uploaded_file, api_key):
     if not MISTRAL_AVAILABLE:
         raise Exception("Chưa cài đặt thư viện mistralai.")
@@ -178,12 +187,17 @@ def process_with_mistral_api(uploaded_file, api_key):
     return full_markdown, images_dict
 
 def process_with_docling_api(uploaded_file, api_key):
-    # Sử dụng endpoint từ trang tài liệu IBM Docling Developer SaaS (có thể cấu hình tắt verify SSL nếu lỗi mạng nội bộ)
+    # Cấu hình chuẩn theo tài liệu Docling SaaS Developer
     url = "https://developer.dcls.saas.ibm.com/v1/convert"
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     files = {"file": (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type)}
     
-    response = requests.post(url, headers=headers, files=files, timeout=60, verify=False)
+    try:
+        response = requests.post(url, headers=headers, files=files, timeout=60, verify=True)
+    except:
+        # Fallback nếu gặp lỗi chứng chỉ SSL trên môi trường mạng cụ thể
+        response = requests.post(url, headers=headers, files=files, timeout=60, verify=False)
+        
     if response.status_code == 200:
         res_json = response.json()
         return res_json.get("markdown", "# Docling Output\n\n" + str(res_json)), {}
@@ -224,9 +238,9 @@ def process_with_mineru_api(uploaded_file, api_key):
                 r_zip = requests.get(data.get("full_zip_url"))
                 if r_zip.status_code == 200:
                     found_json, images_dict = extract_zip_and_get_data(r_zip.content)
-                    return f"# MinerU kết quả cho {file_name}\n\n(Đã trích xuất cấu trúc thành công)", images_dict
+                    return f"# MinerU kết quả cho {file_name}\n\n(Đã trích xuất cấu trúc thành công qua MinerU)", images_dict
             elif data.get("state") == "failed":
-                raise Exception("MinerU xử lý thất bại.")
+                raise Exception("MinerU xử lý thất bại hoặc Token hết hạn.")
     raise Exception("MinerU timeout.")
 
 def process_with_gemini_api(uploaded_file, api_key, model_name):
@@ -243,24 +257,28 @@ def process_with_gemini_api(uploaded_file, api_key, model_name):
     return response.text, {}
 
 
-# --- GIAO DIỆN PREVIEW & TẢI XUỐNG ---
-def render_preview_and_download_options(markdown_content, images_dict, file_name):
-    st.subheader(f"👁️ Xem trước nội dung: {file_name}")
+# --- HÀM HIỂN THỊ KHUNG PREVIEW & CÁC NÚT TẢI WORD CHO TỪNG AI ---
+def render_preview_and_download_options(markdown_content, images_dict, file_name, ai_label="AI"):
+    if not markdown_content:
+        st.info(f"Chưa có dữ liệu kết quả từ **{ai_label}**.")
+        return
+        
+    st.markdown(f"### 👁️ Xem trước kết quả trích xuất từ: `{ai_label}`")
     docx_bytes = generate_pandoc_docx(markdown_content, images_dict)
     
     col_b1, col_b2, col_b3 = st.columns(3)
     with col_b1:
         if docx_bytes:
-            st.download_button("📥 Tải Word (Pandoc Native)", docx_bytes, f"{file_name}_Pandoc.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", type="primary", use_container_width=True)
+            st.download_button(f"📥 Tải Word (Pandoc Native) [{ai_label}]", docx_bytes, f"{file_name}_{ai_label}_Pandoc.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", type="primary", use_container_width=True, key=f"dl_pandoc_{ai_label}")
         else:
-            st.button("📥 Tải Word (Pandoc Native)", disabled=True, use_container_width=True)
+            st.button(f"📥 Tải Word (Pandoc Native) [{ai_label}]", disabled=True, use_container_width=True, key=f"dl_pandoc_dis_{ai_label}")
     with col_b2:
         if docx_bytes:
-            st.download_button("📥 Tải Word (Preview / Thô)", docx_bytes, f"{file_name}_Preview.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", use_container_width=True)
+            st.download_button(f"📥 Tải Word (Preview / Thô) [{ai_label}]", docx_bytes, f"{file_name}_{ai_label}_Preview.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", use_container_width=True, key=f"dl_prev_{ai_label}")
         else:
-            st.button("📥 Tải Word (Preview / Thô)", disabled=True, use_container_width=True)
+            st.button(f"📥 Tải Word (Preview / Thô) [{ai_label}]", disabled=True, use_container_width=True, key=f"dl_prev_dis_{ai_label}")
     with col_b3:
-        st.download_button("📥 Tải File Markdown (.md)", markdown_content, f"{file_name}.md", "text/markdown", use_container_width=True)
+        st.download_button(f"📥 Tải File Markdown (.md) [{ai_label}]", markdown_content, f"{file_name}_{ai_label}.md", "text/markdown", use_container_width=True, key=f"dl_md_{ai_label}")
 
     def replace_img_smart_html(match):
         alt_text = match.group(1)
@@ -273,6 +291,7 @@ def render_preview_and_download_options(markdown_content, images_dict, file_name
 
     processed_html = re.sub(r'!\[(.*?)\]\((.*?)\)', replace_img_smart_html, markdown_content)
     
+    unique_key = f"preview_{ai_label.lower().replace(' ', '_')}"
     preview_component_html = f"""
     <!DOCTYPE html>
     <html>
@@ -285,167 +304,185 @@ def render_preview_and_download_options(markdown_content, images_dict, file_name
         <style>
             body {{ font-family: Arial, sans-serif; padding: 10px; background: #fff; color: #2d3748; }}
             .btn-action {{ padding: 10px 20px; color: white; background: #2b6cb0; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; margin-bottom: 15px; }}
-            .preview-card {{ background: #fff; padding: 30px; border-radius: 10px; border: 1px solid #cbd5e0; max-height: 600px; overflow-y: auto; line-height: 1.8; }}
+            .preview-card {{ background: #fff; padding: 30px; border-radius: 10px; border: 1px solid #cbd5e0; max-height: 500px; overflow-y: auto; line-height: 1.8; }}
         </style>
     </head>
     <body>
-        <button class="btn-action" onclick="copyContentToClipboard()">📋 Sao chép nhanh (Dán vào Word)</button>
-        <div class="preview-card" id="content-to-copy"></div>
+        <button class="btn-action" onclick="copyContentToClipboard_{unique_key}()">📋 Sao chép nhanh [{ai_label}] (Dán vào Word)</button>
+        <div class="preview-card" id="content-to-copy_{unique_key}"></div>
         <script>
-        document.getElementById('content-to-copy').innerHTML = marked.parse({json.dumps(processed_html)});
+        document.getElementById('content-to-copy_{unique_key}').innerHTML = marked.parse({json.dumps(processed_html)});
         setTimeout(() => {{
-            renderMathInElement(document.getElementById('content-to-copy'), {{
+            renderMathInElement(document.getElementById('content-to-copy_{unique_key}'), {{
                 delimiters: [{{left: '$$', right: '$$', display: true}}, {{left: '$', right: '$', display: false}}],
                 throwOnError: false
             }});
         }}, 300);
-        function copyContentToClipboard() {{
+        function copyContentToClipboard_{unique_key}() {{
             const range = document.createRange();
-            range.selectNode(document.getElementById('content-to-copy'));
+            range.selectNode(document.getElementById('content-to-copy_{unique_key}'));
             window.getSelection().removeAllRanges();
             window.getSelection().addRange(range);
             document.execCommand('copy');
             window.getSelection().removeAllRanges();
-            alert("Đã sao chép! Mở Word và nhấn Ctrl+V");
+            alert("Đã sao chép nội dung [{ai_label}]! Mở Word và nhấn Ctrl+V");
         }}
         </script>
     </body>
     </html>
     """
-    components.html(preview_component_html, height=750, scrolling=False)
+    components.html(preview_component_html, height=600, scrolling=False)
 
 
 # --- 5. GIAO DIỆN CHÍNH (2 TABS) ---
 st.title("⚡ p2w.py - Nền tảng Chuyển đổi & Xử lý Tài liệu Đa AI")
 
 tab1, tab2 = st.tabs([
-    "🚀 Tab 1: Xử lý AI Pipeline (Mistral, Docling, MinerU, Gemini)", 
+    "🚀 Tab 1: Xử lý AI Pipeline (4 Khung Preview Độc Lập)", 
     "📦 Tab 2: Quản lý & Dựng Word từ ZIP, JSON, Markdown và Ảnh"
 ])
 
 # ==========================================
-# TAB 1: XỬ LÝ AI PIPELINE (4 AI)
+# TAB 1: XỬ LÝ AI PIPELINE (MISTRAL, DOCLING, MINERU, GEMINI)
 # ==========================================
 with tab1:
-    st.subheader("🔑 Quản lý API Keys (Hỗ trợ Đổi và Lưu Key giống j2w.py)")
+    st.subheader("🔑 Quản lý API Keys (Nhập, Đổi và Lưu an toàn)")
     
     col_k1, col_k2 = st.columns(2)
     with col_k1:
         # Mistral Key
         m_key = st.text_input("Mistral API Key (Chính):", value=st.session_state.saved_mistral_key, type="password", disabled=not st.session_state.mistral_key_editable)
-        if st.button("Đổi Mistral Key"):
-            st.session_state.mistral_key_editable = not st.session_state.mistral_key_editable
-            st.rerun()
-        if st.session_state.mistral_key_editable and st.button("Lưu Mistral Key"):
-            st.session_state.saved_mistral_key = m_key
-            save_config(st.session_state.saved_mistral_key, st.session_state.saved_docling_key, st.session_state.saved_mineru_key, st.session_state.saved_gemini_key)
-            st.session_state.mistral_key_editable = False
-            st.success("Đã lưu Mistral Key!")
-            st.rerun()
+        col_mk1, col_mk2 = st.columns(2)
+        with col_mk1:
+            if st.button("Đổi Mistral Key", key="btn_edit_mistral"):
+                st.session_state.mistral_key_editable = True
+                st.rerun()
+        with col_mk2:
+            if st.session_state.mistral_key_editable and st.button("Lưu Mistral Key", key="btn_save_mistral"):
+                st.session_state.saved_mistral_key = m_key
+                save_config(st.session_state.saved_mistral_key, st.session_state.saved_docling_key, st.session_state.saved_mineru_key, st.session_state.saved_gemini_key)
+                st.session_state.mistral_key_editable = False
+                st.success("Đã lưu Mistral Key!")
+                st.rerun()
 
         # Docling Key
         d_key = st.text_input("Docling API Key (Tham khảo https://developer.dcls.saas.ibm.com/):", value=st.session_state.saved_docling_key, type="password", disabled=not st.session_state.docling_key_editable)
-        if st.button("Đổi Docling Key"):
-            st.session_state.docling_key_editable = not st.session_state.docling_key_editable
-            st.rerun()
-        if st.session_state.docling_key_editable and st.button("Lưu Docling Key"):
-            st.session_state.saved_docling_key = d_key
-            save_config(st.session_state.saved_mistral_key, st.session_state.saved_docling_key, st.session_state.saved_mineru_key, st.session_state.saved_gemini_key)
-            st.session_state.docling_key_editable = False
-            st.success("Đã lưu Docling Key!")
-            st.rerun()
+        col_dk1, col_dk2 = st.columns(2)
+        with col_dk1:
+            if st.button("Đổi Docling Key", key="btn_edit_docling"):
+                st.session_state.docling_key_editable = True
+                st.rerun()
+        with col_dk2:
+            if st.session_state.docling_key_editable and st.button("Lưu Docling Key", key="btn_save_docling"):
+                st.session_state.saved_docling_key = d_key
+                save_config(st.session_state.saved_mistral_key, st.session_state.saved_docling_key, st.session_state.saved_mineru_key, st.session_state.saved_gemini_key)
+                st.session_state.docling_key_editable = False
+                st.success("Đã lưu Docling Key!")
+                st.rerun()
 
     with col_k2:
         # MinerU Key
         mi_key = st.text_input("MinerU API Key:", value=st.session_state.saved_mineru_key, type="password", disabled=not st.session_state.mineru_key_editable)
-        if st.button("Đổi MinerU Key"):
-            st.session_state.mineru_key_editable = not st.session_state.mineru_key_editable
-            st.rerun()
-        if st.session_state.mineru_key_editable and st.button("Lưu MinerU Key"):
-            st.session_state.saved_mineru_key = mi_key
-            save_config(st.session_state.saved_mistral_key, st.session_state.saved_docling_key, st.session_state.saved_mineru_key, st.session_state.saved_gemini_key)
-            st.session_state.mineru_key_editable = False
-            st.success("Đã lưu MinerU Key!")
-            st.rerun()
+        col_mik1, col_mik2 = st.columns(2)
+        with col_mik1:
+            if st.button("Đổi MinerU Key", key="btn_edit_mineru"):
+                st.session_state.mineru_key_editable = True
+                st.rerun()
+        with col_mik2:
+            if st.session_state.mineru_key_editable and st.button("Lưu MinerU Key", key="btn_save_mineru"):
+                st.session_state.saved_mineru_key = mi_key
+                save_config(st.session_state.saved_mistral_key, st.session_state.saved_docling_key, st.session_state.saved_mineru_key, st.session_state.saved_gemini_key)
+                st.session_state.mineru_key_editable = False
+                st.success("Đã lưu MinerU Key!")
+                st.rerun()
 
         # Gemini Key
         g_key = st.text_input("Gemini Pro API Key:", value=st.session_state.saved_gemini_key, type="password", disabled=not st.session_state.gemini_key_editable)
-        if st.button("Đổi Gemini Key"):
-            st.session_state.gemini_key_editable = not st.session_state.gemini_key_editable
-            st.rerun()
-        if st.session_state.gemini_key_editable and st.button("Lưu Gemini Key"):
-            st.session_state.saved_gemini_key = g_key
-            save_config(st.session_state.saved_mistral_key, st.session_state.saved_docling_key, st.session_state.saved_mineru_key, st.session_state.saved_gemini_key)
-            st.session_state.gemini_key_editable = False
-            st.success("Đã lưu Gemini Key!")
-            st.rerun()
+        col_gk1, col_gk2 = st.columns(2)
+        with col_gk1:
+            if st.button("Đổi Gemini Key", key="btn_edit_gemini"):
+                st.session_state.gemini_key_editable = True
+                st.rerun()
+        with col_gk2:
+            if st.session_state.gemini_key_editable and st.button("Lưu Gemini Key", key="btn_save_gemini"):
+                st.session_state.saved_gemini_key = g_key
+                save_config(st.session_state.saved_mistral_key, st.session_state.saved_docling_key, st.session_state.saved_mineru_key, st.session_state.saved_gemini_key)
+                st.session_state.gemini_key_editable = False
+                st.success("Đã lưu Gemini Key!")
+                st.rerun()
 
     st.divider()
-    st.subheader("📤 Tải lên tài liệu để xử lý qua AI Pipeline")
+    st.subheader("📤 Tải lên tài liệu để xử lý qua Hệ thống 4 AI song song/tuần tự")
     pipeline_file = st.file_uploader("Chọn file tài liệu (PDF, Ảnh)", type=["pdf", "png", "jpg", "jpeg"], key="tab1_file_upload")
-    
-    selected_ai_primary = st.selectbox(
-        "Chọn mô hình xử lý chủ đạo (Thứ tự ưu tiên):",
-        ["Mistral (Chính)", "Docling", "MinerU", "Gemini Pro"]
-    )
     selected_gemini_model = st.selectbox("Chọn Model Gemini cụ thể:", ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-1.5-flash", "gemini-1.5-pro"], index=0)
 
-    if st.button("🚀 Bắt đầu Chạy Chuỗi AI Pipeline", type="primary"):
+    if st.button("🚀 Chạy Tất Cả 4 AI Pipeline", type="primary"):
         if not pipeline_file:
             st.warning("Vui lòng tải lên file tài liệu!")
         else:
             base_name = pipeline_file.name.rsplit(".", 1)[0]
-            success = False
-            raw_md = ""
-            imgs_dict = {}
+            st.session_state.active_file_name = base_name
             
-            # Sắp xếp thứ tự ưu tiên
-            ai_mapping = [
-                ("Mistral", st.session_state.saved_mistral_key),
-                ("Docling", st.session_state.saved_docling_key),
-                ("MinerU", st.session_state.saved_mineru_key),
-                ("Gemini Pro", st.session_state.saved_gemini_key)
+            ai_tasks = [
+                ("Mistral", st.session_state.saved_mistral_key, process_with_mistral_api),
+                ("Docling", st.session_state.saved_docling_key, process_with_docling_api),
+                ("MinerU", st.session_state.saved_mineru_key, process_with_mineru_api),
+                ("Gemini Pro", st.session_state.saved_gemini_key, lambda f, k: process_with_gemini_api(f, k, selected_gemini_model))
             ]
-            if "Docling" in selected_ai_primary:
-                ai_mapping.insert(0, ai_mapping.pop(1))
-            elif "MinerU" in selected_ai_primary:
-                ai_mapping.insert(0, ai_mapping.pop(2))
-            elif "Gemini" in selected_ai_primary:
-                ai_mapping.insert(0, ai_mapping.pop(3))
 
-            with st.spinner("Đang tiến hành xử lý tài liệu qua chuỗi AI..."):
-                for ai_name, key_val in ai_mapping:
+            for ai_name, key_val, func in ai_tasks:
+                with st.spinner(f"Đang xử lý tài liệu qua mô hình: {ai_name}..."):
                     try:
-                        st.info(f"Đang gọi mô hình: **{ai_name}**...")
                         log_info(f"Thực thi trích xuất qua {ai_name}")
-                        
-                        if ai_name == "Mistral":
-                            raw_md, imgs_dict = process_with_mistral_api(pipeline_file, key_val)
-                        elif ai_name == "Docling":
-                            raw_md, imgs_dict = process_with_docling_api(pipeline_file, key_val)
-                        elif ai_name == "MinerU":
-                            raw_md, imgs_dict = process_with_mineru_api(pipeline_file, key_val)
-                        elif ai_name == "Gemini Pro":
-                            raw_md, imgs_dict = process_with_gemini_api(pipeline_file, key_val, selected_gemini_model)
-                        
-                        success = True
-                        break
+                        md_res, img_res = func(pipeline_file, key_val)
+                        st.session_state.ai_results[ai_name]["md"] = md_res
+                        st.session_state.ai_results[ai_name]["imgs"] = img_res
+                        st.success(f"✅ {ai_name} hoàn thành trích xuất!")
                     except Exception as e:
-                        log_error(f"Lỗi khi xử lý qua {ai_name}: {e}")
-                        continue
+                        err_msg = f"Lỗi xử lý qua {ai_name}: {str(e)}"
+                        log_error(err_msg)
+                        st.session_state.ai_results[ai_name]["md"] = f"# Lỗi trích xuất từ {ai_name}\n\n> {err_msg}"
+                        st.session_state.ai_results[ai_name]["imgs"] = {}
+                        st.warning(err_msg)
 
-            if success:
-                st.session_state.active_preview_markdown = raw_md
-                st.session_state.active_images_dict = imgs_dict
-                st.session_state.active_file_name = base_name
-                st.success("🎉 Xử lý AI thành công!")
-                st.rerun()
-            else:
-                st.error("Tất cả các mô hình trong chuỗi Pipeline AI đều thất bại (Vui lòng kiểm tra lại hạn mức hoặc API Key hợp lệ).")
+            st.success("🎉 Đã hoàn tất chuỗi xử lý AI Pipeline!")
+            st.rerun()
 
-    if st.session_state.active_preview_markdown:
+    # HIỂN THỊ 4 KHUNG PREVIEW ĐỘC LẬP TƯƠNG TỨNG VỚI 4 AI
+    if any(res["md"] for res in st.session_state.ai_results.values()):
         st.divider()
-        render_preview_and_download_options(st.session_state.active_preview_markdown, st.session_state.active_images_dict, st.session_state.active_file_name)
+        st.subheader("📊 Kết quả so sánh & Khung Preview độc lập của 4 AI")
+        
+        tab_m, tab_d, tab_mi, tab_g = st.tabs(["🌪️ Mistral OCR", "📄 Docling", "📐 MinerU", "✨ Gemini Pro"])
+        
+        with tab_m:
+            render_preview_and_download_options(
+                st.session_state.ai_results["Mistral"]["md"], 
+                st.session_state.ai_results["Mistral"]["imgs"], 
+                st.session_state.active_file_name, 
+                "Mistral"
+            )
+        with tab_d:
+            render_preview_and_download_options(
+                st.session_state.ai_results["Docling"]["md"], 
+                st.session_state.ai_results["Docling"]["imgs"], 
+                st.session_state.active_file_name, 
+                "Docling"
+            )
+        with tab_mi:
+            render_preview_and_download_options(
+                st.session_state.ai_results["MinerU"]["md"], 
+                st.session_state.ai_results["MinerU"]["imgs"], 
+                st.session_state.active_file_name, 
+                "MinerU"
+            )
+        with tab_g:
+            render_preview_and_download_options(
+                st.session_state.ai_results["Gemini Pro"]["md"], 
+                st.session_state.ai_results["Gemini Pro"]["imgs"], 
+                st.session_state.active_file_name, 
+                "Gemini Pro"
+            )
 
 
 # ==========================================
@@ -453,6 +490,8 @@ with tab1:
 # ==========================================
 with tab2:
     st.subheader("📦 Quản lý file đầu vào: ZIP, JSON, Markdown và Ảnh")
+    st.write("Tải lên các gói file hoặc tệp ảnh riêng lẻ để dựng file Word và xem trước.")
+    
     col_u1, col_u2 = st.columns(2)
     with col_u1:
         package_file = st.file_uploader("📥 Tải lên gói tệp (ZIP, JSON hoặc Markdown)", type=["zip", "json", "md", "markdown"], key="tab2_pkg")
@@ -479,7 +518,6 @@ with tab2:
                 st.rerun()
             elif file_ext == "json":
                 json_content = json.loads(package_file.getvalue().decode("utf-8"))
-                st.session_state.active_json = json_content
                 st.session_state.active_images_dict = tab2_imgs_dict
                 st.session_state.active_file_name = file_base
                 st.session_state.active_preview_markdown = f"# Dữ liệu JSON: {file_base}\n\n```json\n" + json.dumps(json_content, ensure_ascii=False, indent=2) + "\n```"
@@ -497,7 +535,12 @@ with tab2:
 
     if st.session_state.active_preview_markdown:
         st.divider()
-        render_preview_and_download_options(st.session_state.active_preview_markdown, st.session_state.active_images_dict, st.session_state.active_file_name)
+        render_preview_and_download_options(
+            st.session_state.active_preview_markdown, 
+            st.session_state.active_images_dict, 
+            st.session_state.active_file_name,
+            "Quản lý Workspace"
+        )
 
 # --- XEM NHẬT KÝ HỆ THỐNG ---
 st.divider()
