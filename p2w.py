@@ -421,11 +421,17 @@ with tab1:
             f_name = pipeline_file.name
             f_type = pipeline_file.type
             
+            # Lưu key ra biến cục bộ trước khi truyền vào ThreadPool để tránh lỗi context st.session_state
+            k_mistral = st.session_state.saved_mistral_key
+            k_docling = st.session_state.saved_docling_key
+            k_mineru = st.session_state.saved_mineru_key
+            k_gemini = st.session_state.saved_gemini_key
+            
             tasks = {
-                "Mistral": lambda: process_with_mistral(f_bytes, f_name, f_type, st.session_state.saved_mistral_key),
-                "Docling": lambda: process_with_docling(f_bytes, f_name, f_type, st.session_state.saved_docling_key),
-                "MinerU": lambda: process_with_mineru(f_bytes, f_name, f_type, st.session_state.saved_mineru_key),
-                "Gemini Pro": lambda: process_with_gemini(f_bytes, f_name, f_type, st.session_state.saved_gemini_key, selected_gemini_model)
+                "Mistral": lambda: process_with_mistral(f_bytes, f_name, f_type, k_mistral),
+                "Docling": lambda: process_with_docling(f_bytes, f_name, f_type, k_docling),
+                "MinerU": lambda: process_with_mineru(f_bytes, f_name, f_type, k_mineru),
+                "Gemini Pro": lambda: process_with_gemini(f_bytes, f_name, f_type, k_gemini, selected_gemini_model)
             }
 
             with st.spinner("⏳ Đang gửi file và thực thi ĐỒNG THỜI qua 4 mô hình AI (Vui lòng đợi trong giây lát)..."):
