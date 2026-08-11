@@ -80,7 +80,7 @@ DEFAULT_MINERU_KEY = saved_config.get("mineru_key", "sk-IDb81Oj2W6pHrODooHN0xtKT
 DEFAULT_GEMINI_KEY = saved_config.get("gemini_key", "AQ.Ab8RN6IiVh_ufztKik5rSMrl39c-U6_L6v5oy_Qru1-YNUBdRg")
 
 # --- CẤU HÌNH GIAO DIỆN ---
-st.set_page_config(page_title="p2w.py - Multi-AI Concurrent Suite", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="p2w.py - Multi-AI Concurrent & Individual Suite", page_icon="⚡", layout="wide")
 MINERU_BASE_URL = "https://mineru.net"
 DOCLING_BASE_URL = "https://api.aws-c1.dcls.saas.ibm.com/20260811-1219-1052-8050-3cf005cc005c"
 
@@ -104,7 +104,17 @@ if "ai_results" not in st.session_state:
     }
 
 
-# --- CÁC HÀM XỬ LÝ DÙNG CHUNG ---
+# --- CÁC HÀM XỬ LÝ DÙNG CHUNG & LÀM SẠCH LATEX ---
+def clean_markdown_for_preview(md_text):
+    if not md_text:
+        return ""
+    # Tránh lỗi ký tự % làm hỏng công thức LaTeX (ví dụ 115% -> 115\%)
+    cleaned = re.sub(r'(\d+)%', r'\1\\%', md_text)
+    # Chuẩn hóa hệ phương trình begin{cases}
+    cleaned = re.sub(r'\\begin\{cases\}', r'$$\\begin{cases}', cleaned)
+    cleaned = re.sub(r'\\end\{cases\}', r'\\end{cases}$$', cleaned)
+    return cleaned
+
 def clean_and_wrap_latex(latex_str):
     if not latex_str: return ""
     clean_str = latex_str.strip()
@@ -150,6 +160,8 @@ def generate_pandoc_docx(data, images_dict):
         md_text = "".join(md_lines)
     else:
         md_text = str(data)
+
+    md_text = clean_markdown_for_preview(md_text)
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         temp_md_path = os.path.join(tmp_dir, "temp_input.md")
@@ -199,7 +211,7 @@ def process_with_mistral(file_bytes, file_name, file_type, api_key):
                         try:
                             images_dict[img_id if img_id.lower().endswith((".jpeg", ".jpg", ".png")) else f"{img_id}.jpeg"] = base64.b64decode(img_b64)
                         except: pass
-    return None, full_markdown, images_dict
+    return None, clean_markdown_for_preview(full_markdown), images_dict
 
 def process_with_docling(file_bytes, file_name, file_type, api_key):
     url_convert = f"{DOCLING_BASE_URL}/v1/convert/file/async"
@@ -215,7 +227,6 @@ def process_with_docling(file_bytes, file_name, file_type, api_key):
     if not task_id:
         raise Exception(f"Không nhận được task_id từ Docling: {res_data}")
 
-    # Tăng số lần polling lên 80 lần (khoảng gần 7 phút) để tránh timeout
     for _ in range(80):
         time.sleep(5)
         url_status = f"{DOCLING_BASE_URL}/v1/status/poll/{task_id}"
@@ -229,7 +240,7 @@ def process_with_docling(file_bytes, file_name, file_type, api_key):
                 if res_fetch.status_code == 200:
                     result_json = res_fetch.json()
                     md = result_json.get("markdown", str(result_json))
-                    return None, md, {}
+                    return None, clean_markdown_for_preview(md), {}
             elif status == "failure" or status == "failed":
                 raise Exception("Docling conversion task failed.")
     raise Exception("Docling polling timeout.")
@@ -270,7 +281,6 @@ def process_with_mineru(file_bytes, file_name, file_type, api_key):
 def process_with_gemini(file_bytes, file_name, file_type, api_key, model_name):
     if not GEMINI_AVAILABLE:
         raise Exception("Chưa cài đặt google-genai.")
-    # Sử dụng os.environ để truyền key trực tiếp tránh lỗi UNAUTHENTICATED của SDK mới
     os.environ["GEMINI_API_KEY"] = api_key
     client = genai.Client(api_key=api_key)
     response = client.models.generate_content(
@@ -280,12 +290,12 @@ def process_with_gemini(file_bytes, file_name, file_type, api_key, model_name):
             "Hãy đọc tài liệu này chính xác tuyệt đối. Biểu thức toán học đặt trong cặp đô la ($...$). Trình bày Markdown sạch sẽ."
         ]
     )
-    return None, response.text, {}
+    return None, clean_markdown_for_preview(response.text), {}
 
 
 # --- HÀM RENDER PREVIEW BOX ---
 def render_ai_preview_box(ai_label, json_data, markdown_text, images_dict, file_name):
-    st.subheader(f"📊 Kết quả đồng thời từ: `{ai_label}`")
+    st.subheader(f"📊 Kết quả từ: `{ai_label}`")
     
     data_source = json_data if json_data else markdown_text
     docx_bytes = generate_pandoc_docx(data_source, images_dict) if data_source else None
@@ -346,16 +356,16 @@ def render_ai_preview_box(ai_label, json_data, markdown_text, images_dict, file_
 
 
 # --- GIAO DIỆN CHÍNH (2 TABS) ---
-st.title("⚡ p2w.py - Nền tảng Xử lý Đồng thời Đa AI")
-st.write("Hệ thống gửi tệp tài liệu chạy **đồng thời song song** qua **Mistral**, **Docling**, **MinerU** và **Gemini Pro**.")
+st.title("⚡ p2w.py - Nền tảng Xử lý Đồng thời & Riêng lẻ Đa AI")
+st.write("Hệ thống hỗ trợ chạy **đồng thời song song** hoặc chạy **riêng lẻ từng AI** qua **Mistral**, **Docling**, **MinerU** và **Gemini Pro**.")
 
 tab1, tab2 = st.tabs([
-    "🚀 Tab 1: Chạy Đồng Thời 4 AI & 4 Khung Preview", 
+    "🚀 Tab 1: AI Pipeline (Chạy đồng thời hoặc từng AI riêng biệt)", 
     "📦 Tab 2: Quản lý & Dựng Word từ ZIP, JSON, Markdown và Ảnh"
 ])
 
 # ==========================================
-# TAB 1: XỬ LÝ ĐỒNG THỜI 4 AI PIPELINE
+# TAB 1: XỬ LÝ ĐỒNG THỜI HOẶC TỪNG AI RIÊNG LẺ
 # ==========================================
 with tab1:
     st.subheader("🔑 Cấu hình API Keys (Hỗ trợ Đổi và Lưu an toàn)")
@@ -413,62 +423,81 @@ with tab1:
 
     st.divider()
     selected_gemini_model = st.selectbox("Chọn Model Gemini:", ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-1.5-flash", "gemini-1.5-pro"], index=0)
-    pipeline_file = st.file_uploader("📥 Tải file tài liệu (PDF, Ảnh) để chạy đồng thời 4 AI", type=["pdf", "png", "jpg", "jpeg"], key="tab1_upload")
+    pipeline_file = st.file_uploader("📥 Tải file tài liệu (PDF, Ảnh) để xử lý", type=["pdf", "png", "jpg", "jpeg"], key="tab1_upload")
 
-    if st.button("🚀 Chạy Đồng Thời Cả 4 AI Pipeline", type="primary"):
-        if not pipeline_file:
-            st.warning("Vui lòng tải lên file!")
+    st.markdown("### 🎛️ Bảng điều khiển tác vụ AI (Chạy đồng thời hoặc chạy riêng lẻ từng AI)")
+    
+    col_btn_all, col_btn_m, col_btn_d, col_btn_mi, col_btn_g = st.columns(5)
+    
+    run_all = col_btn_all.button("🚀 Chạy Tất Cả (Đồng thời)", type="primary", use_container_width=True)
+    run_mistral = col_btn_m.button("🌪️ Chỉ chạy Mistral", use_container_width=True)
+    run_docling = col_btn_d.button("📄 Chỉ chạy Docling", use_container_width=True)
+    run_mineru = col_btn_mi.button("📐 Chỉ chạy MinerU", use_container_width=True)
+    run_gemini = col_btn_g.button("✨ Chỉ chạy Gemini", use_container_width=True)
+
+    # Xử lý sự kiện bấm nút
+    if pipeline_file and (run_all or run_mistral or run_docling or run_mineru or run_gemini):
+        base_name = pipeline_file.name.rsplit(".", 1)[0]
+        f_bytes = pipeline_file.getvalue()
+        f_name = pipeline_file.name
+        f_type = pipeline_file.type
+        
+        k_mistral = st.session_state.saved_mistral_key
+        k_docling = st.session_state.saved_docling_key
+        k_mineru = st.session_state.saved_mineru_key
+        k_gemini = st.session_state.saved_gemini_key
+        
+        all_tasks = {
+            "Mistral": lambda: process_with_mistral(f_bytes, f_name, f_type, k_mistral),
+            "Docling": lambda: process_with_docling(f_bytes, f_name, f_type, k_docling),
+            "MinerU": lambda: process_with_mineru(f_bytes, f_name, f_type, k_mineru),
+            "Gemini Pro": lambda: process_with_gemini(f_bytes, f_name, f_type, k_gemini, selected_gemini_model)
+        }
+
+        # Lọc danh sách task cần chạy dựa theo nút người dùng bấm
+        if run_all:
+            selected_tasks = all_tasks
         else:
-            base_name = pipeline_file.name.rsplit(".", 1)[0]
-            f_bytes = pipeline_file.getvalue()
-            f_name = pipeline_file.name
-            f_type = pipeline_file.type
-            
-            # Lưu key ra biến cục bộ an toàn trước khi chạy ThreadPool
-            k_mistral = st.session_state.saved_mistral_key
-            k_docling = st.session_state.saved_docling_key
-            k_mineru = st.session_state.saved_mineru_key
-            k_gemini = st.session_state.saved_gemini_key
-            
-            tasks = {
-                "Mistral": lambda: process_with_mistral(f_bytes, f_name, f_type, k_mistral),
-                "Docling": lambda: process_with_docling(f_bytes, f_name, f_type, k_docling),
-                "MinerU": lambda: process_with_mineru(f_bytes, f_name, f_type, k_mineru),
-                "Gemini Pro": lambda: process_with_gemini(f_bytes, f_name, f_type, k_gemini, selected_gemini_model)
-            }
+            selected_tasks = {}
+            if run_mistral: selected_tasks["Mistral"] = all_tasks["Mistral"]
+            if run_docling: selected_tasks["Docling"] = all_tasks["Docling"]
+            if run_mineru: selected_tasks["MinerU"] = all_tasks["MinerU"]
+            if run_gemini: selected_tasks["Gemini Pro"] = all_tasks["Gemini Pro"]
 
-            with st.spinner("⏳ Đang gửi file và thực thi ĐỒNG THỜI qua 4 mô hình AI (Vui lòng đợi trong giây lát)..."):
-                with ThreadPoolExecutor(max_workers=4) as executor:
-                    future_to_ai = {executor.submit(task_func): ai_name for ai_name, task_func in tasks.items()}
-                    
-                    for future in as_completed(future_to_ai):
-                        ai_name = future_to_ai[future]
-                        try:
-                            json_res, md_res, img_res = future.result()
-                            st.session_state.ai_results[ai_name] = {
-                                "json": json_res,
-                                "md": md_res,
-                                "imgs": img_res,
-                                "name": base_name
-                            }
-                            log_info(f"AI {ai_name} hoàn thành đồng thời.")
-                        except Exception as e:
-                            err_msg = f"Lỗi xử lý: {str(e)}"
-                            log_error(f"Lỗi AI {ai_name}: {err_msg}")
-                            st.session_state.ai_results[ai_name] = {
-                                "json": None,
-                                "md": f"# Lỗi xử lý từ {ai_name}\n\n> {err_msg}",
-                                "imgs": {},
-                                "name": base_name
-                            }
+        with st.spinner(f"⏳ Đang thực thi các mô hình AI đã chọn ({list(selected_tasks.keys())})..."):
+            with ThreadPoolExecutor(max_workers=len(selected_tasks)) as executor:
+                future_to_ai = {executor.submit(task_func): ai_name for ai_name, task_func in selected_tasks.items()}
+                
+                for future in as_completed(future_to_ai):
+                    ai_name = future_to_ai[future]
+                    try:
+                        json_res, md_res, img_res = future.result()
+                        st.session_state.ai_results[ai_name] = {
+                            "json": json_res,
+                            "md": md_res,
+                            "imgs": img_res,
+                            "name": base_name
+                        }
+                        log_info(f"AI {ai_name} hoàn thành thành công.")
+                    except Exception as e:
+                        err_msg = f"Lỗi xử lý: {str(e)}"
+                        log_error(f"Lỗi AI {ai_name}: {err_msg}")
+                        st.session_state.ai_results[ai_name] = {
+                            "json": None,
+                            "md": f"# Lỗi xử lý từ {ai_name}\n\n> {err_msg}",
+                            "imgs": {},
+                            "name": base_name
+                        }
 
-            st.success("🎉 Đã hoàn tất xử lý đồng thời qua 4 AI Pipeline!")
-            st.rerun()
+        st.success("🎉 Hoàn tất quá trình xử lý!")
+        st.rerun()
+    elif not pipeline_file and (run_all or run_mistral or run_docling or run_mineru or run_gemini):
+        st.warning("Vui lòng tải lên file tài liệu trước khi bấm nút chạy!")
 
-    # HIỂN THỊ 4 KHUNG PREVIEW ĐỘC LẬP CHẠY ĐỒNG THỜI
+    # HIỂN THỊ 4 KHUNG PREVIEW ĐỘC LẬP
     if any(res.get("json") or res.get("md") for res in st.session_state.ai_results.values()):
         st.divider()
-        st.subheader("📊 Kết quả so sánh & Khung Preview độc lập đồng thời của 4 AI")
+        st.subheader("📊 Khung Preview độc lập tương ứng của các AI")
         
         t_m, t_d, t_mi, t_g = st.tabs(["🌪️ Mistral OCR", "📄 Docling", "📐 MinerU", "✨ Gemini Pro"])
         
