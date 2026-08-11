@@ -82,6 +82,7 @@ DEFAULT_GEMINI_KEY = saved_config.get("gemini_key", "AQ.Ab8RN6IiVh_ufztKik5rSMrl
 # --- CẤU HÌNH GIAO DIỆN ---
 st.set_page_config(page_title="p2w.py - Multi-AI Concurrent Suite", page_icon="⚡", layout="wide")
 MINERU_BASE_URL = "https://mineru.net"
+DOCLING_BASE_URL = "https://api.aws-c1.dcls.saas.ibm.com/20260811-1219-1052-8050-3cf005cc005c"
 
 # --- KHỞI TẠO SESSION STATE CHO EDIT KEY ---
 if "mistral_key_editable" not in st.session_state: st.session_state.mistral_key_editable = False
@@ -201,20 +202,38 @@ def process_with_mistral(file_bytes, file_name, file_type, api_key):
     return None, full_markdown, images_dict
 
 def process_with_docling(file_bytes, file_name, file_type, api_key):
-    url = "https://developer.dcls.saas.ibm.com/v1/convert"
-    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
-    files = {"file": (file_name, file_bytes, file_type)}
-    try:
-        response = requests.post(url, headers=headers, files=files, timeout=60, verify=True)
-    except:
-        response = requests.post(url, headers=headers, files=files, timeout=60, verify=False)
+    # Chuẩn xác theo tài liệu Docling SaaS API mới nhất (Async file upload, poll status, get result)
+    url_convert = f"{DOCLING_BASE_URL}/v1/convert/file/async"
+    headers = {"X-Api-Key": api_key} if api_key else {}
+    files = {"files": (file_name, file_bytes, file_type)}
+    
+    response = requests.post(url_convert, headers=headers, files=files, timeout=60)
+    if response.status_code != 200:
+        raise Exception(f"Docling Convert Init Error: {response.status_code} - {response.text}")
         
-    if response.status_code == 200:
-        res_json = response.json()
-        md = res_json.get("markdown", "# Docling Output\n\n" + str(res_json))
-        return None, md, {}
-    else:
-        raise Exception(f"Docling API Error: {response.status_code} - {response.text}")
+    res_data = response.json()
+    task_id = res_data.get("task_id") or res_data.get("id")
+    if not task_id:
+        raise Exception(f"Không nhận được task_id từ Docling: {res_data}")
+
+    # Polling trạng thái
+    for _ in range(40):
+        time.sleep(5)
+        url_status = f"{DOCLING_BASE_URL}/v1/status/poll/{task_id}"
+        st_res = requests.get(url_status, headers=headers, timeout=30)
+        if st_res.status_code == 200:
+            st_data = st_res.json()
+            status = st_data.get("status") or st_data.get("state")
+            if status == "success":
+                url_result = f"{DOCLING_BASE_URL}/v1/result/{task_id}"
+                res_fetch = requests.get(url_result, headers=headers, timeout=30)
+                if res_fetch.status_code == 200:
+                    result_json = res_fetch.json()
+                    md = result_json.get("markdown", str(result_json))
+                    return None, md, {}
+            elif status == "failure" or status == "failed":
+                raise Exception("Docling conversion task failed.")
+    raise Exception("Docling polling timeout.")
 
 def process_with_mineru(file_bytes, file_name, file_type, api_key):
     upload_url = "https://tmpfiles.org/api/v1/upload"
@@ -354,7 +373,7 @@ with tab1:
                 st.success("Đã lưu Mistral Key!")
                 st.rerun()
 
-        d_key = st.text_input("Docling API Key:", value=st.session_state.saved_docling_key, type="password", disabled=not st.session_state.docling_key_editable)
+        d_key = st.text_input("Docling API Key (X-Api-Key):", value=st.session_state.saved_docling_key, type="password", disabled=not st.session_state.docling_key_editable)
         c3, c4 = st.columns(2)
         with c3:
             if st.button("Đổi Docling Key", key="b_ed_d"): st.session_state.docling_key_editable = True; st.rerun()
@@ -439,7 +458,7 @@ with tab1:
             st.success("🎉 Đã hoàn tất xử lý đồng thời qua 4 AI Pipeline!")
             st.rerun()
 
-    # HIỂN THỊ 4 KHUNG PREVIEW ĐỘC LẬP CHẠY ĐỒNG THỜI (Dùng .get() để tránh KeyError tuyệt đối)
+    # HIỂN THỊ 4 KHUNG PREVIEW ĐỘC LẬP CHẠY ĐỒNG THỜI
     if any(res.get("json") or res.get("md") for res in st.session_state.ai_results.values()):
         st.divider()
         st.subheader("📊 Kết quả so sánh & Khung Preview độc lập đồng thời của 4 AI")
