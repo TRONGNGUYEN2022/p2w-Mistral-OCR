@@ -49,6 +49,7 @@ except ImportError:
 
 # --- CẤU HÌNH LƯU KEY RA FILE TRÊN SERVER ---
 CONFIG_FILE = "p2w_config_keys.json"
+MISTRAL_KEY_FILE = "api_key_Mistral.txt"
 
 def load_saved_config():
     if os.path.exists(CONFIG_FILE):
@@ -59,9 +60,18 @@ def load_saved_config():
             pass
     return {}
 
-def save_config(mistral_key, docling_key, mineru_key, gemini_key):
+def load_mistral_keys_from_file():
+    if os.path.exists(MISTRAL_KEY_FILE):
+        try:
+            with open(MISTRAL_KEY_FILE, "r", encoding="utf-8") as f:
+                content = f.read()
+                return content
+        except:
+            pass
+    return "Asht2uDLjH8WTWnU06dBWdPbpcVQrbt5"
+
+def save_config(docling_key, mineru_key, gemini_key):
     config_data = {
-        "mistral_key": mistral_key,
         "docling_key": docling_key,
         "mineru_key": mineru_key,
         "gemini_key": gemini_key
@@ -72,15 +82,22 @@ def save_config(mistral_key, docling_key, mineru_key, gemini_key):
     except Exception as e:
         log_error(f"Lỗi khi lưu config: {e}")
 
+def save_mistral_keys_to_file(keys_text):
+    try:
+        with open(MISTRAL_KEY_FILE, "w", encoding="utf-8") as f:
+            f.write(keys_text)
+    except Exception as e:
+        log_error(f"Lỗi khi lưu file api_key_Mistral.txt: {e}")
+
 saved_config = load_saved_config()
 
-DEFAULT_MISTRAL_KEY = saved_config.get("mistral_key", "Asht2uDLjH8WTWnU06dBWdPbpcVQrbt5")
 DEFAULT_DOCLING_KEY = saved_config.get("docling_key", "")
 DEFAULT_MINERU_KEY = saved_config.get("mineru_key", "sk-IDb81Oj2W6pHrODooHN0xtKTxEXNzipsnZP6OxAqAl65Kz9O")
 DEFAULT_GEMINI_KEY = saved_config.get("gemini_key", "AQ.Ab8RN6IiVh_ufztKik5rSMrl39c-U6_L6v5oy_Qru1-YNUBdRg")
+DEFAULT_MISTRAL_KEYS_RAW = load_mistral_keys_from_file()
 
 # --- CẤU HÌNH GIAO DIỆN ---
-st.set_page_config(page_title="p2w.py - Multi-AI Concurrent & Individual Suite", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="p2w.py - Multi-AI Concurrent & Rotation Suite", page_icon="⚡", layout="wide")
 MINERU_BASE_URL = "https://mineru.net"
 DOCLING_BASE_URL = "https://api.aws-c1.dcls.saas.ibm.com/20260811-1219-1052-8050-3cf005cc005c"
 
@@ -90,7 +107,7 @@ if "docling_key_editable" not in st.session_state: st.session_state.docling_key_
 if "mineru_key_editable" not in st.session_state: st.session_state.mineru_key_editable = False
 if "gemini_key_editable" not in st.session_state: st.session_state.gemini_key_editable = False
 
-if "saved_mistral_key" not in st.session_state: st.session_state.saved_mistral_key = DEFAULT_MISTRAL_KEY
+if "saved_mistral_keys_raw" not in st.session_state: st.session_state.saved_mistral_keys_raw = DEFAULT_MISTRAL_KEYS_RAW
 if "saved_docling_key" not in st.session_state: st.session_state.saved_docling_key = DEFAULT_DOCLING_KEY
 if "saved_mineru_key" not in st.session_state: st.session_state.saved_mineru_key = DEFAULT_MINERU_KEY
 if "saved_gemini_key" not in st.session_state: st.session_state.saved_gemini_key = DEFAULT_GEMINI_KEY
@@ -104,13 +121,11 @@ if "ai_results" not in st.session_state:
     }
 
 
-# --- CÁC HÀM XỬ LÝ DÙNG CHUNG & LÀM SẠCH LATEX ---
+# --- CÁC HÀM XỬ LÝ LÀM SẠCH LATEX & PREVIEW ---
 def clean_markdown_for_preview(md_text):
     if not md_text:
         return ""
-    # Tránh lỗi ký tự % làm hỏng công thức LaTeX (ví dụ 115% -> 115\%)
     cleaned = re.sub(r'(\d+)%', r'\1\\%', md_text)
-    # Chuẩn hóa hệ phương trình begin{cases}
     cleaned = re.sub(r'\\begin\{cases\}', r'$$\\begin{cases}', cleaned)
     cleaned = re.sub(r'\\end\{cases\}', r'\\end{cases}$$', cleaned)
     return cleaned
@@ -184,34 +199,55 @@ def generate_pandoc_docx(data, images_dict):
             os.chdir(original_dir)
 
 
-# --- XỬ LÝ 4 AI ĐỘC LẬP ---
-def process_with_mistral(file_bytes, file_name, file_type, api_key):
+# --- XỬ LÝ MISTRAL VỚI CƠ CHẾ XOAY VÒNG KEY TỪ api_key_Mistral.txt ---
+def process_with_mistral_with_rotation(file_bytes, file_name, file_type, raw_keys_str):
     if not MISTRAL_AVAILABLE:
         raise Exception("Chưa cài đặt mistralai SDK.")
-    client = Mistral(api_key=api_key)
-    base64_file = base64.b64encode(file_bytes).decode('utf-8')
-    ocr_response = client.ocr.process(
-        document={"type": "document_url", "document_url": f"data:{file_type};base64,{base64_file}"},
-        model="mistral-ocr-latest",
-        include_image_base64=True,
-        include_blocks=True
-    )
-    full_markdown = ""
-    images_dict = {}
-    if hasattr(ocr_response, "pages"):
-        for idx, page in enumerate(ocr_response.pages):
-            page_md = page.markdown if hasattr(page, "markdown") else ""
-            full_markdown += f"\n\n<hr/>\n<h3>Trang {idx+1} (Mistral OCR)</h3>\n\n" + page_md
-            if hasattr(page, "images") and page.images:
-                for img in page.images:
-                    if hasattr(img, "id") and hasattr(img, "image_base64") and img.image_base64:
-                        img_id = img.id
-                        img_b64 = img.image_base64
-                        if "," in img_b64: img_b64 = img_b64.split(",")[1]
-                        try:
-                            images_dict[img_id if img_id.lower().endswith((".jpeg", ".jpg", ".png")) else f"{img_id}.jpeg"] = base64.b64decode(img_b64)
-                        except: pass
-    return None, clean_markdown_for_preview(full_markdown), images_dict
+    
+    # Tách danh sách key theo xuống dòng hoặc dấu phẩy
+    key_list = [k.strip() for k in re.split(r'[,\n]', raw_keys_str) if k.strip()]
+    if not key_list:
+        raise Exception("Không tìm thấy Mistral API Key hợp lệ.")
+
+    last_error = None
+    for idx, api_key in enumerate(key_list):
+        try:
+            log_info(f"Đang thử xử lý Mistral OCR với Key số {idx + 1}...")
+            client = Mistral(api_key=api_key)
+            base64_file = base64.b64encode(file_bytes).decode('utf-8')
+            
+            ocr_response = client.ocr.process(
+                document={"type": "document_url", "document_url": f"data:{file_type};base64,{base64_file}"},
+                model="mistral-ocr-latest",
+                include_image_base64=True,
+                include_blocks=True
+            )
+            
+            full_markdown = ""
+            images_dict = {}
+            if hasattr(ocr_response, "pages"):
+                for p_idx, page in enumerate(ocr_response.pages):
+                    page_md = page.markdown if hasattr(page, "markdown") else ""
+                    full_markdown += f"\n\n<hr/>\n<h3>Trang {p_idx+1} (Mistral OCR)</h3>\n\n" + page_md
+                    if hasattr(page, "images") and page.images:
+                        for img in page.images:
+                            if hasattr(img, "id") and hasattr(img, "image_base64") and img.image_base64:
+                                img_id = img.id
+                                img_b64 = img.image_base64
+                                if "," in img_b64: img_b64 = img_b64.split(",")[1]
+                                try:
+                                    images_dict[img_id if img_id.lower().endswith((".jpeg", ".jpg", ".png")) else f"{img_id}.jpeg"] = base64.b64decode(img_b64)
+                                except: pass
+            
+            log_info(f"Mistral OCR thành công với Key số {idx + 1}")
+            return None, clean_markdown_for_preview(full_markdown), images_dict
+            
+        except Exception as e:
+            last_error = e
+            log_error(f"Key số {idx + 1} lỗi: {str(e)}. Đang chuyển sang key tiếp theo...")
+            continue
+            
+    raise Exception(f"Tất cả các Mistral Key đều thất bại. Lỗi cuối: {str(last_error)}")
 
 def process_with_docling(file_bytes, file_name, file_type, api_key):
     url_convert = f"{DOCLING_BASE_URL}/v1/convert/file/async"
@@ -356,11 +392,11 @@ def render_ai_preview_box(ai_label, json_data, markdown_text, images_dict, file_
 
 
 # --- GIAO DIỆN CHÍNH (2 TABS) ---
-st.title("⚡ p2w.py - Nền tảng Xử lý Đồng thời & Riêng lẻ Đa AI")
-st.write("Hệ thống hỗ trợ chạy **đồng thời song song** hoặc chạy **riêng lẻ từng AI** qua **Mistral**, **Docling**, **MinerU** và **Gemini Pro**.")
+st.title("⚡ p2w.py - Nền tảng Xử lý Đồng thời & Xoay vòng Key Đa AI")
+st.write("Hệ thống hỗ trợ chạy đồng thời/riêng lẻ qua **Mistral** (có tự động xoay vòng danh sách key từ `api_key_Mistral.txt`), **Docling**, **MinerU** và **Gemini Pro**.")
 
 tab1, tab2 = st.tabs([
-    "🚀 Tab 1: AI Pipeline (Chạy đồng thời hoặc từng AI riêng biệt)", 
+    "🚀 Tab 1: AI Pipeline (Xoay vòng Key Mistral & Điều khiển AI)", 
     "📦 Tab 2: Quản lý & Dựng Word từ ZIP, JSON, Markdown và Ảnh"
 ])
 
@@ -372,16 +408,22 @@ with tab1:
     col_k1, col_k2 = st.columns(2)
     
     with col_k1:
-        m_key = st.text_input("Mistral API Key:", value=st.session_state.saved_mistral_key, type="password", disabled=not st.session_state.mistral_key_editable)
+        # Mistral Keys đọc từ file api_key_Mistral.txt
+        m_keys = st.text_area(
+            "Danh sách Mistral API Keys (Đọc/Lưu từ `api_key_Mistral.txt`, mỗi key 1 dòng):", 
+            value=st.session_state.saved_mistral_keys_raw, 
+            height=100,
+            disabled=not st.session_state.mistral_key_editable
+        )
         c1, c2 = st.columns(2)
         with c1:
-            if st.button("Đổi Mistral Key", key="b_ed_m"): st.session_state.mistral_key_editable = True; st.rerun()
+            if st.button("Đổi Mistral Keys", key="b_ed_m"): st.session_state.mistral_key_editable = True; st.rerun()
         with c2:
-            if st.session_state.mistral_key_editable and st.button("Lưu Mistral Key", key="b_sv_m"):
-                st.session_state.saved_mistral_key = m_key
-                save_config(st.session_state.saved_mistral_key, st.session_state.saved_docling_key, st.session_state.saved_mineru_key, st.session_state.saved_gemini_key)
+            if st.session_state.mistral_key_editable and st.button("Lưu Mistral Keys", key="b_sv_m"):
+                st.session_state.saved_mistral_keys_raw = m_keys
+                save_mistral_keys_to_file(m_keys)
                 st.session_state.mistral_key_editable = False
-                st.success("Đã lưu Mistral Key!")
+                st.success("Đã lưu danh sách Mistral Keys vào file `api_key_Mistral.txt`!")
                 st.rerun()
 
         d_key = st.text_input("Docling API Key (X-Api-Key):", value=st.session_state.saved_docling_key, type="password", disabled=not st.session_state.docling_key_editable)
@@ -391,7 +433,7 @@ with tab1:
         with c4:
             if st.session_state.docling_key_editable and st.button("Lưu Docling Key", key="b_sv_d"):
                 st.session_state.saved_docling_key = d_key
-                save_config(st.session_state.saved_mistral_key, st.session_state.saved_docling_key, st.session_state.saved_mineru_key, st.session_state.saved_gemini_key)
+                save_config(st.session_state.saved_docling_key, st.session_state.saved_mineru_key, st.session_state.saved_gemini_key)
                 st.session_state.docling_key_editable = False
                 st.success("Đã lưu Docling Key!")
                 st.rerun()
@@ -404,7 +446,7 @@ with tab1:
         with c6:
             if st.session_state.mineru_key_editable and st.button("Lưu MinerU Key", key="b_sv_mi"):
                 st.session_state.saved_mineru_key = mi_key
-                save_config(st.session_state.saved_mistral_key, st.session_state.saved_docling_key, st.session_state.saved_mineru_key, st.session_state.saved_gemini_key)
+                save_config(st.session_state.saved_docling_key, st.session_state.saved_mineru_key, st.session_state.saved_gemini_key)
                 st.session_state.mineru_key_editable = False
                 st.success("Đã lưu MinerU Key!")
                 st.rerun()
@@ -416,7 +458,7 @@ with tab1:
         with c8:
             if st.session_state.gemini_key_editable and st.button("Lưu Gemini Key", key="b_sv_g"):
                 st.session_state.saved_gemini_key = g_key
-                save_config(st.session_state.saved_mistral_key, st.session_state.saved_docling_key, st.session_state.saved_mineru_key, st.session_state.saved_gemini_key)
+                save_config(st.session_state.saved_docling_key, st.session_state.saved_mineru_key, st.session_state.saved_gemini_key)
                 st.session_state.gemini_key_editable = False
                 st.success("Đã lưu Gemini Key!")
                 st.rerun()
@@ -435,26 +477,24 @@ with tab1:
     run_mineru = col_btn_mi.button("📐 Chỉ chạy MinerU", use_container_width=True)
     run_gemini = col_btn_g.button("✨ Chỉ chạy Gemini", use_container_width=True)
 
-    # Xử lý sự kiện bấm nút
     if pipeline_file and (run_all or run_mistral or run_docling or run_mineru or run_gemini):
         base_name = pipeline_file.name.rsplit(".", 1)[0]
         f_bytes = pipeline_file.getvalue()
         f_name = pipeline_file.name
         f_type = pipeline_file.type
         
-        k_mistral = st.session_state.saved_mistral_key
+        k_mistral_raw = st.session_state.saved_mistral_keys_raw
         k_docling = st.session_state.saved_docling_key
         k_mineru = st.session_state.saved_mineru_key
         k_gemini = st.session_state.saved_gemini_key
         
         all_tasks = {
-            "Mistral": lambda: process_with_mistral(f_bytes, f_name, f_type, k_mistral),
+            "Mistral": lambda: process_with_mistral_with_rotation(f_bytes, f_name, f_type, k_mistral_raw),
             "Docling": lambda: process_with_docling(f_bytes, f_name, f_type, k_docling),
             "MinerU": lambda: process_with_mineru(f_bytes, f_name, f_type, k_mineru),
             "Gemini Pro": lambda: process_with_gemini(f_bytes, f_name, f_type, k_gemini, selected_gemini_model)
         }
 
-        # Lọc danh sách task cần chạy dựa theo nút người dùng bấm
         if run_all:
             selected_tasks = all_tasks
         else:
@@ -545,7 +585,7 @@ with tab2:
                 st.rerun()
             elif file_ext in ["md", "markdown"]:
                 md_content = package_file.getvalue().decode("utf-8")
-                st.session_state.ai_results["Mistral"] = {"json": None, "md": md_content, "imgs": tab2_imgs_dict, "name": file_base}
+                st.session_state.ai_results["Mistral"] = {"json": None, "md": clean_markdown_for_preview(md_content), "imgs": tab2_imgs_dict, "name": file_base}
                 st.success("Đã nạp file Markdown thành công!")
                 st.rerun()
         except Exception as e:
