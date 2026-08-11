@@ -127,13 +127,12 @@ def clean_markdown_for_preview(md_text):
     # 1. Tránh lỗi ký tự % làm hỏng công thức
     cleaned = re.sub(r'(\d+)%', r'\1\\%', md_text)
     
-    # 2. Thay thế các dạng ngoặc đơn chứa công thức như (\frac{...}{...}) thành $\frac{...}{...}$
-    cleaned = re.sub(r'\(([a-zA-Z0-9\+\-\*\/\s\\\^\_\.\{\}]+?\\frac[^)]+?)\)', r'$\1$', cleaned)
-    cleaned = re.sub(r'\(([a-zA-Z0-9\+\-\*\/\s\\\^\_\.\{\}]+?\\sqrt[^)]+?)\)', r'$\1$', cleaned)
-
-    # 3. Tự động bọc các biểu thức toán học dạng phân số / căn thức độc lập chưa có dấu $
-    cleaned = re.sub(r'(?<![\$\w])(\\frac\{[^}]+\}\{[^}]+\})', r'$\1$', cleaned)
-    cleaned = re.sub(r'(?<![\$\w])(\\sqrt\{[^}]+\})', r'$\1$', cleaned)
+    # 2. Xử lý các biểu thức bị tách rời dấu $ do lỗi OCR (ví dụ: \frac{1}{\cos^2 \alpha}$ \left$ ...)
+    cleaned = re.sub(r'\$\s*\$\s*', '', cleaned)
+    
+    # 3. Tự động bọc các cụm lệnh toán học đơn lẻ chưa được đóng mở đúng dấu $
+    cleaned = re.sub(r'(?<!\$)\\frac\{[^}]+\}\{[^}]+\}', r'$\g<0>$', cleaned)
+    cleaned = re.sub(r'(?<!\$)\\(?:mathbb|alpha|beta|gamma|delta|pi|theta|sigma|omega|sum|int|in|neq|le|ge|cdot|pm)\b', r'$\g<0>$', cleaned)
 
     # 4. Chuẩn hóa hệ phương trình cases
     cleaned = re.sub(r'\\begin\{cases\}', r'$$\\begin{cases}', cleaned)
