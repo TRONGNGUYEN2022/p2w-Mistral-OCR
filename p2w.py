@@ -338,7 +338,7 @@ tab1, tab2 = st.tabs([
 # TAB 1: XỬ LÝ ĐỒNG THỜI 4 AI PIPELINE
 # ==========================================
 with tab1:
-    st.subheader("🔑 Quản lý API Keys (Nhập, Đổi và Lưu an toàn)")
+    st.subheader("🔑 Cấu hình API Keys (Hỗ trợ Đổi và Lưu an toàn)")
     col_k1, col_k2 = st.columns(2)
     
     with col_k1:
@@ -351,7 +351,7 @@ with tab1:
                 st.session_state.saved_mistral_key = m_key
                 save_config(st.session_state.saved_mistral_key, st.session_state.saved_docling_key, st.session_state.saved_mineru_key, st.session_state.saved_gemini_key)
                 st.session_state.mistral_key_editable = False
-                st.success("Đã lưu!")
+                st.success("Đã lưu Mistral Key!")
                 st.rerun()
 
         d_key = st.text_input("Docling API Key:", value=st.session_state.saved_docling_key, type="password", disabled=not st.session_state.docling_key_editable)
@@ -363,7 +363,7 @@ with tab1:
                 st.session_state.saved_docling_key = d_key
                 save_config(st.session_state.saved_mistral_key, st.session_state.saved_docling_key, st.session_state.saved_mineru_key, st.session_state.saved_gemini_key)
                 st.session_state.docling_key_editable = False
-                st.success("Đã lưu!")
+                st.success("Đã lưu Docling Key!")
                 st.rerun()
 
     with col_k2:
@@ -376,7 +376,7 @@ with tab1:
                 st.session_state.saved_mineru_key = mi_key
                 save_config(st.session_state.saved_mistral_key, st.session_state.saved_docling_key, st.session_state.saved_mineru_key, st.session_state.saved_gemini_key)
                 st.session_state.mineru_key_editable = False
-                st.success("Đã lưu!")
+                st.success("Đã lưu MinerU Key!")
                 st.rerun()
 
         g_key = st.text_input("Gemini API Key:", value=st.session_state.saved_gemini_key, type="password", disabled=not st.session_state.gemini_key_editable)
@@ -388,7 +388,7 @@ with tab1:
                 st.session_state.saved_gemini_key = g_key
                 save_config(st.session_state.saved_mistral_key, st.session_state.saved_docling_key, st.session_state.saved_mineru_key, st.session_state.saved_gemini_key)
                 st.session_state.gemini_key_editable = False
-                st.success("Đã lưu!")
+                st.success("Đã lưu Gemini Key!")
                 st.rerun()
 
     st.divider()
@@ -439,25 +439,25 @@ with tab1:
             st.success("🎉 Đã hoàn tất xử lý đồng thời qua 4 AI Pipeline!")
             st.rerun()
 
-    # HIỂN THỊ 4 KHUNG PREVIEW ĐỘC LẬP CHẠY ĐỒNG THỜI
-    if any(res["json"] or res["md"] for res in st.session_state.ai_results.values()):
+    # HIỂN THỊ 4 KHUNG PREVIEW ĐỘC LẬP CHẠY ĐỒNG THỜI (Dùng .get() để tránh KeyError tuyệt đối)
+    if any(res.get("json") or res.get("md") for res in st.session_state.ai_results.values()):
         st.divider()
         st.subheader("📊 Kết quả so sánh & Khung Preview độc lập đồng thời của 4 AI")
         
         t_m, t_d, t_mi, t_g = st.tabs(["🌪️ Mistral OCR", "📄 Docling", "📐 MinerU", "✨ Gemini Pro"])
         
         with t_m:
-            res = st.session_state.ai_results["Mistral"]
-            render_ai_preview_box("Mistral", res["json"], res["md"], res["imgs"], res["name"])
+            res = st.session_state.ai_results.get("Mistral", {})
+            render_ai_preview_box("Mistral", res.get("json"), res.get("md"), res.get("imgs", {}), res.get("name", "Document"))
         with t_d:
-            res = st.session_state.ai_results["Docling"]
-            render_ai_preview_box("Docling", res["json"], res["md"], res["imgs"], res["name"])
+            res = st.session_state.ai_results.get("Docling", {})
+            render_ai_preview_box("Docling", res.get("json"), res.get("md"), res.get("imgs", {}), res.get("name", "Document"))
         with t_mi:
-            res = st.session_state.ai_results["MinerU"]
-            render_ai_preview_box("MinerU", res["json"], res["md"], res["imgs"], res["name"])
+            res = st.session_state.ai_results.get("MinerU", {})
+            render_ai_preview_box("MinerU", res.get("json"), res.get("md"), res.get("imgs", {}), res.get("name", "Document"))
         with t_g:
-            res = st.session_state.ai_results["Gemini Pro"]
-            render_ai_preview_box("Gemini Pro", res["json"], res["md"], res["imgs"], res["name"])
+            res = st.session_state.ai_results.get("Gemini Pro", {})
+            render_ai_preview_box("Gemini Pro", res.get("json"), res.get("md"), res.get("imgs", {}), res.get("name", "Document"))
 
 
 # ==========================================
@@ -498,12 +498,12 @@ with tab2:
             st.error(f"Lỗi khi đọc file: {e}")
 
     st.divider()
-    res_m = st.session_state.ai_results["Mistral"]
-    res_mu = st.session_state.ai_results["MinerU"]
-    if res_m["md"]:
-        render_ai_preview_box("Workspace Mistral", None, res_m["md"], res_m["imgs"], res_m["name"])
-    if res_mu["json"]:
-        render_ai_preview_box("Workspace MinerU", res_mu["json"], "", res_mu["imgs"], res_mu["name"])
+    res_m = st.session_state.ai_results.get("Mistral", {})
+    res_mu = st.session_state.ai_results.get("MinerU", {})
+    if res_m.get("md"):
+        render_ai_preview_box("Workspace Mistral", None, res_m.get("md"), res_m.get("imgs", {}), res_m.get("name", "Document"))
+    if res_mu.get("json"):
+        render_ai_preview_box("Workspace MinerU", res_mu.get("json"), "", res_mu.get("imgs", {}), res_mu.get("name", "Document"))
 
 # --- XEM NHẬT KÝ HỆ THỐNG ---
 st.divider()
