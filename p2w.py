@@ -106,8 +106,13 @@ def compile_markdown_to_word(full_markdown, images_dict):
         with open(temp_md_path, "w", encoding="utf-8") as f:
             f.write(full_markdown)
         
+        # Tạo thư mục images trong thư mục tạm để Pandoc nhận diện khi extract-media
+        os.makedirs(os.path.join(tmp_dir, "images"), exist_ok=True)
         for img_name, img_bytes in images_dict.items():
+            # Lưu ở gốc và trong thư mục images để đảm bảo Pandoc bắt được mọi đường dẫn tương đối
             with open(os.path.join(tmp_dir, img_name), "wb") as img_f:
+                img_f.write(img_bytes)
+            with open(os.path.join(tmp_dir, "images", img_name), "wb") as img_f:
                 img_f.write(img_bytes)
                 
         original_dir = os.getcwd()
@@ -130,7 +135,7 @@ def compile_markdown_to_word(full_markdown, images_dict):
 # --- GIAO DIỆN CHÍNH (2 TABS) ---
 st.title("🌪️ Mistral OCR & Offline Universal Processor")
 
-tab_online, tab_offline = st.tabs(["🚀 Mistral OCR (Online)", "📁 Xử lý Offline (ZIP, JSON, Markdown)"])
+tab_online, tab_offline = st.tabs(["🚀 Mistral OCR (Online)", "📁 Xử lý Offline (ZIP, JSON, Markdown + Ảnh bổ sung)"])
 
 # ==========================================
 # TAB 1: MISTRAL OCR ONLINE
@@ -228,7 +233,7 @@ with tab_online:
                     if hasattr(ocr_response, "pages"):
                         for idx, page in enumerate(ocr_response.pages):
                             page_md = page.markdown if hasattr(page, "markdown") else ""
-                            page_md = re.sub(r'!\[(.*?)\]\([^)]*?(img[_-]\d+\.(?:jpeg\vert{}jpg\vert{}png))\)', r'![\1](\2)', page_md)
+                            page_md = re.sub(r'!\[(.*?)\]\([^)]*?(img[_-]\d+\.(?:jpeg|jpg|png))\)', r'![\1](\2)', page_md)
                             page_md_safe = re.sub(r'^\s*---\s*$', '<hr/>', page_md, flags=re.MULTILINE)
                             
                             full_markdown += f"\n\n<hr/>\n<h3>Trang {idx+1}</h3>\n\n" + page_md_safe
@@ -266,23 +271,30 @@ with tab_online:
                     st.error(f"Lỗi khi xử lý: {e}")
 
 # ==========================================
-# TAB 2: XỬ LÝ OFFLINE (ZIP, JSON, MARKDOWN)
+# TAB 2: XỬ LÝ OFFLINE (ZIP, JSON, MD + ẢNH)
 # ==========================================
 with tab_offline:
-    st.subheader("📁 Nạp và chuẩn hóa file Offline (ZIP, JSON, Markdown)")
-    st.markdown("💡 *Bạn có thể upload file kết quả từ Docling hoặc bất kỳ file cấu trúc JSON/ZIP/Markdown nào để hệ thống tự động gom nối và chuyển đổi sang Word.*")
+    st.subheader("📁 Nạp và chuẩn hóa file Offline kết hợp thư mục ảnh bổ sung")
+    st.markdown("💡 *Upload file cấu trúc (ZIP, JSON, Markdown) và chọn thêm các file ảnh liên quan (nếu file cấu trúc chưa gom sẵn ảnh) để hệ thống tự động nhúng.*")
     
     offline_file = st.file_uploader(
-        "Chọn file cấu trúc (ZIP, JSON hoặc Markdown)", 
+        "Chọn file cấu trúc chính (ZIP, JSON hoặc Markdown)", 
         type=["zip", "json", "md"], 
         key="offline_upload_tab"
     )
     
-    normalization_option = st.checkbox("✨ Kích hoạt cơ chế làm sạch & chuẩn hóa định dạng (Loại bỏ các thẻ rác/lỗi ký tự)", value=True)
+    extra_image_files = st.file_uploader(
+        "Chọn các file ảnh bổ sung (PNG, JPG, JPEG - có thể chọn nhiều file)", 
+        type=["png", "jpg", "jpeg"], 
+        accept_multiple_files=True, 
+        key="offline_extra_imgs"
+    )
+    
+    normalization_option = st.checkbox("✨ Kích hoạt cơ chế làm sạch & chuẩn hóa định dạng văn bản", value=True, key="off_norm")
 
-    if st.button("⚙️ Xử lý & Dựng file Word Offline"):
+    if st.button("⚙️ Xử lý, Nhúng ảnh & Dựng file Word Offline"):
         if not offline_file:
-            st.warning("Vui lòng tải lên file dữ liệu!")
+            st.warning("Vui lòng tải lên file dữ liệu cấu trúc chính!")
         else:
             cleanup_old_temp_files()
             file_name_full = offline_file.name
@@ -296,6 +308,7 @@ with tab_offline:
             try:
                 file_bytes = offline_file.getvalue()
                 
+                # 1. Nạp ảnh từ file ZIP (nếu có)
                 if file_extension == "zip":
                     with zipfile.ZipFile(io.BytesIO(file_bytes)) as z:
                         for filename in z.namelist():
@@ -306,10 +319,14 @@ with tab_offline:
                                 try:
                                     j_content = json.loads(z.read(filename).decode("utf-8"))
                                     json_records.append({"filename": filename, "data": j_content})
-                                    # Trích xuất thông minh từ layout JSON của Docling/MinerU nếu có
                                     if "pages" in j_content:
                                         for p_idx, page in enumerate(j_content["pages"]):
                                             p_md = page.get("markdown", "")
+                                            full_markdown += f"\n\n<h3>Trang {p_idx+1}</h3>\n\n" + p_md
+                                    elif "ketQuaOcr" in j_content and "pages" in j_content["ketQuaOcr"]:
+                                        for p_obj in j_content["ketQuaOcr"]["pages"]:
+                                            p_idx = p_obj.get("index", 0)
+                                            p_md = p_obj.get("markdown", "")
                                             full_markdown += f"\n\n<h3>Trang {p_idx+1}</h3>\n\n" + p_md
                                     elif "pdf_info" in j_content:
                                         full_markdown += f"\n\n" + json.dumps(j_content, ensure_ascii=False, indent=2)
@@ -321,6 +338,7 @@ with tab_offline:
                                 md_content = z.read(filename).decode("utf-8")
                                 full_markdown += f"\n\n<!-- File: {filename} -->\n" + md_content
 
+                # 2. Nạp từ file JSON đơn lẻ (ví dụ layout.json hoặc file ocr_raw.json)
                 elif file_extension == "json":
                     j_content = json.loads(file_bytes.decode("utf-8"))
                     json_records.append({"filename": file_name_full, "data": j_content})
@@ -336,12 +354,17 @@ with tab_offline:
                     else:
                         full_markdown = json.dumps(j_content, ensure_ascii=False, indent=2)
 
+                # 3. Nạp từ file Markdown đơn lẻ (.md)
                 elif file_extension == "md":
                     full_markdown = file_bytes.decode("utf-8")
 
+                # 4. Bổ sung các file ảnh upload rời từ giao diện
+                if extra_image_files:
+                    for img_item in extra_image_files:
+                        images_dict[img_item.name] = img_item.getvalue()
+
                 # Cơ chế chuẩn hóa (Normalization)
                 if normalization_option:
-                    # Làm sạch cơ bản các lỗi ngắt dòng và thẻ rác thông dụng từ OCR
                     full_markdown = re.sub(r'\n{3,}', '\n\n', full_markdown)
                     full_markdown = full_markdown.replace("-\n", "")
 
@@ -351,7 +374,7 @@ with tab_offline:
                 st.session_state.active_file_name = base_name_off
 
                 compile_markdown_to_word(full_markdown, images_dict)
-                st.success("🎉 Nạp, chuẩn hóa dữ liệu offline và tạo file Word thành công!")
+                st.success("🎉 Nạp, nhúng ảnh bổ sung và tạo file Word thành công!")
             except Exception as e:
                 log_error(f"Lỗi xử lý file offline: {str(e)}")
                 st.error(f"Lỗi khi đọc file cấu trúc: {e}")
