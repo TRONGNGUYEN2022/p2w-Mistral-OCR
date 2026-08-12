@@ -8,7 +8,6 @@ import time
 import tempfile
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from bs4 import BeautifulSoup
 import requests
 import streamlit as st
 import streamlit.components.v1 as components
@@ -100,7 +99,7 @@ st.set_page_config(page_title="p2w.py - Multi-AI Concurrent & Rotation Suite", p
 MINERU_BASE_URL = "https://mineru.net"
 DOCLING_BASE_URL = "https://api.aws-c1.dcls.saas.ibm.com/20260811-1219-1052-8050-3cf005cc005c"
 
-# --- KHỞI TẠO SESSION STATE ĐẦY ĐỦ AN TOÀN ---
+# --- KHỞI TẠO SESSION STATE ---
 if "mistral_key_editable" not in st.session_state: st.session_state.mistral_key_editable = False
 if "docling_key_editable" not in st.session_state: st.session_state.docling_key_editable = False
 if "mineru_key_editable" not in st.session_state: st.session_state.mineru_key_editable = False
@@ -120,32 +119,220 @@ if "ai_results" not in st.session_state:
     }
 
 
-# --- CÁC HÀM LÀM SẠCH LATEX & PREVIEW THÔNG MINH ---
-def clean_markdown_for_preview(md_text):
-    if not md_text:
-        return ""
-    # 1. Tránh lỗi ký tự % làm hỏng công thức
-    cleaned = re.sub(r'(\d+)%', r'\1\\%', md_text)
-    
-    # 2. Xử lý các biểu thức bị tách rời dấu $ do lỗi OCR (ví dụ: \frac{1}{\cos^2 \alpha}$ \left$ ...)
-    cleaned = re.sub(r'\$\s*\$\s*', '', cleaned)
-    
-    # 3. Tự động bọc các cụm lệnh toán học đơn lẻ chưa được đóng mở đúng dấu $
-    cleaned = re.sub(r'(?<!\$)\\frac\{[^}]+\}\{[^}]+\}', r'$\g<0>$', cleaned)
-    cleaned = re.sub(r'(?<!\$)\\(?:mathbb|alpha|beta|gamma|delta|pi|theta|sigma|omega|sum|int|in|neq|le|ge|cdot|pm)\b', r'$\g<0>$', cleaned)
-
-    # 4. Chuẩn hóa hệ phương trình cases
-    cleaned = re.sub(r'\\begin\{cases\}', r'$$\\begin{cases}', cleaned)
-    cleaned = re.sub(r'\\end\{cases\}', r'\\end{cases}$$', cleaned)
-    
-    return cleaned
+# ==============================================================================
+# BỘ CÔNG CỤ CHUYỂN ĐỔI SONG HÀNH: JSON (FOR PREVIEW) <-> MARKDOWN (FOR PANDOC)
+# ==============================================================================
 
 def clean_and_wrap_latex(latex_str):
     if not latex_str: return ""
     clean_str = latex_str.strip()
-    if clean_str.startswith("$") and clean_str.endswith("$"):
+    if clean_str.startswith("$$") and clean_str.endswith("$$"):
+        clean_str = clean_str[2:-2].strip()
+    elif clean_str.startswith("$") and clean_str.endswith("$"):
         clean_str = clean_str[1:-1].strip()
     return f"${clean_str}$"
+
+def clean_markdown_for_preview(md_text):
+    if not md_text: return ""
+    cleaned = re.sub(r'(\d+)%', r'\1\\%', md_text)
+    cleaned = re.sub(r'\$\s*\$\s*', '', cleaned)
+    cleaned = re.sub(r'(?<!\$)\\frac\{[^}]+\}\{[^}]+\}', r'$\g<0>$', cleaned)
+    cleaned = re.sub(r'(?<!\$)\\(?:mathbb|alpha|beta|gamma|delta|pi|theta|sigma|omega|sum|int|in|neq|le|ge|cdot|pm)\b', r'$\g<0>$', cleaned)
+    cleaned = re.sub(r'\\begin\{cases\}', r'$$\\begin{cases}', cleaned)
+    cleaned = re.sub(r'\\end\{cases\}', r'\\end{cases}$$', cleaned)
+    return cleaned
+
+def markdown_to_json(md_text):
+    """Chuyển đổi chuỗi Markdown thành cấu trúc JSON Blocks chuẩn để phục vụ Preview."""
+    if not md_text:
+        return {"blocks": []}
+    
+    blocks = []
+    lines = md_text.split("\n")
+    current_block = []
+    in_math = False
+    math_buf = []
+
+    for line in lines:
+        stripped = line.strip()
+        
+        # Công thức khối $$...$$
+        if stripped.startswith("$$") and stripped.endswith("$$") and len(stripped) > 2:
+            if current_block:
+                blocks.append({"type": "text", "content": "\n".join(current_block)})
+                current_block = []
+            blocks.append({"type": "equation", "content": stripped})
+            continue
+        elif stripped.startswith("$$"):
+            if in_math:
+                math_buf.append(stripped)
+                blocks.append({"type": "equation", "content": "\n".join(math_buf)})
+                math_buf = []
+                in_math = False
+            else:
+                if current_block:
+                    blocks.append({"type": "text", "content": "\n".join(current_block)})
+                    current_block = []
+                in_math = True
+                math_buf = [stripped]
+            continue
+            
+        if in_math:
+            math_buf.append(line)
+            continue
+
+        # Tiêu đề #, ##
+        if stripped.startswith("#"):
+            if current_block:
+                blocks.append({"type": "text", "content": "\n".join(current_block)})
+                current_block = []
+            content = re.sub(r'^#+\s*', '', stripped)
+            blocks.append({"type": "title", "content": content})
+            continue
+
+        # Ảnh ![alt](url/id)
+        img_match = re.search(r'!\[(.*?)\]\((.*?)\)', stripped)
+        if img_match:
+            if current_block:
+                blocks.append({"type": "text", "content": "\n".join(current_block)})
+                current_block = []
+            blocks.append({"type": "image", "imageId": img_match.group(2)})
+            continue
+
+        if stripped == "":
+            if current_block:
+                blocks.append({"type": "text", "content": "\n".join(current_block)})
+                current_block = []
+        else:
+            current_block.append(line)
+
+    if current_block:
+        blocks.append({"type": "text", "content": "\n".join(current_block)})
+
+    return {"blocks": blocks}
+
+def json_to_markdown(data):
+    """Chuyển đổi cấu trúc JSON thành chuỗi Markdown để Pandoc xử lý tạo Word."""
+    if not isinstance(data, (dict, list)):
+        return str(data)
+    
+    md_lines = []
+    pages = data.get("pdf_info", [data]) if isinstance(data, dict) else data
+    if not isinstance(pages, list):
+        pages = [pages]
+        
+    for page in pages:
+        if not isinstance(page, dict): continue
+        blocks = page.get("para_blocks", page.get("blocks", []))
+        for block in blocks:
+            if not isinstance(block, dict): continue
+            b_type = block.get("type", "text")
+            content = block.get("content", "")
+            
+            if b_type == "title":
+                md_lines.append(f"## {content}\n\n")
+            elif b_type == "equation":
+                eq = clean_and_wrap_latex(content)
+                md_lines.append(f"\n$$\n{eq.strip('$')}\n$$\n\n")
+            elif b_type == "image":
+                img_id = block.get("imageId", block.get("img_id", ""))
+                md_lines.append(f"![{img_id}]({img_id})\n\n")
+            elif b_type == "table":
+                md_lines.append(f"{content}\n\n")
+            else:
+                if "lines" in block:
+                    p_text = ""
+                    for line in block.get("lines", []):
+                        for span in line.get("spans", []):
+                            c = span.get("content", span.get("text", ""))
+                            if span.get("type") == "inline_equation":
+                                p_text += f" {clean_and_wrap_latex(c)} "
+                            else:
+                                p_text += c
+                    md_lines.append(f"{p_text.strip()}\n\n")
+                elif content:
+                    md_lines.append(f"{content.strip()}\n\n")
+    return "".join(md_lines)
+
+def json_to_html_preview_body(json_data, images_dict):
+    """Dựng mã HTML xem trước từ JSON Blocks có nhúng ảnh Base64 và thẻ toán KaTeX."""
+    if not json_data or not isinstance(json_data, dict):
+        return "<p>Không có dữ liệu JSON để hiển thị.</p>"
+    
+    blocks = json_data.get("blocks", [])
+    if not blocks and "pdf_info" in json_data:
+        # Gom tất cả các blocks từ các trang
+        blocks = []
+        for p in json_data.get("pdf_info", []):
+            blocks.extend(p.get("para_blocks", p.get("blocks", [])))
+            
+    html_out = []
+    for b in blocks:
+        if not isinstance(b, dict): continue
+        b_type = b.get("type", "text")
+        content = b.get("content", "")
+        
+        if b_type == "title":
+            html_out.append(f"<h3 style='color:#2b6cb0; margin-top:15px;'>{content}</h3>")
+        elif b_type == "equation":
+            clean_eq = content.strip()
+            if not clean_eq.startswith("$$"):
+                clean_eq = f"$${clean_eq}$$"
+            html_out.append(f"<div style='text-align:center; margin:10px 0;'>{clean_eq}</div>")
+        elif b_type == "image":
+            img_id = b.get("imageId", b.get("img_id", ""))
+            # Tìm ảnh trong images_dict
+            matched_bytes = None
+            for name, bytes_val in images_dict.items():
+                if img_id in name or name in img_id:
+                    matched_bytes = bytes_val
+                    break
+            if matched_bytes:
+                b64 = base64.b64encode(matched_bytes).decode('utf-8')
+                html_out.append(f"<p style='text-align:center;'><img src='data:image/jpeg;base64,{b64}' style='max-width:90%; height:auto; border-radius:4px;'/></p>")
+            else:
+                html_out.append(f"<p style='color:#718096;'><i>[Hình ảnh: {img_id}]</i></p>")
+        else:
+            if content:
+                # Đổi xuống dòng thành <br>
+                formatted_c = content.replace("\n", "<br>")
+                html_out.append(f"<p>{formatted_c}</p>")
+                
+    return "".join(html_out)
+
+
+# --- HÀM TẠO FILE WORD BẰNG PANDOC TỪ MARKDOWN ---
+def generate_pandoc_docx(data, images_dict):
+    """Xuất file Word bằng Pandoc từ dữ liệu Markdown."""
+    if isinstance(data, (dict, list)):
+        md_text = json_to_markdown(data)
+    else:
+        md_text = str(data)
+
+    md_text = clean_markdown_for_preview(md_text)
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        temp_md_path = os.path.join(tmp_dir, "temp_input.md")
+        with open(temp_md_path, "w", encoding="utf-8") as f:
+            f.write(md_text)
+            
+        for img_name, img_bytes in images_dict.items():
+            with open(os.path.join(tmp_dir, img_name), "wb") as img_f:
+                img_f.write(img_bytes)
+                
+        original_dir = os.getcwd()
+        os.chdir(tmp_dir)
+        try:
+            output_docx = "Output_Native.docx"
+            pypandoc.convert_file("temp_input.md", 'docx', outputfile=output_docx, extra_args=['--standalone', '--extract-media=.'])
+            with open(output_docx, "rb") as f:
+                return f.read()
+        except Exception as e:
+            log_error(f"Lỗi tạo Word Pandoc: {e}")
+            return None
+        finally:
+            os.chdir(original_dir)
+
 
 def extract_zip_and_get_data(zip_bytes):
     images_dict = {}
@@ -161,55 +348,8 @@ def extract_zip_and_get_data(zip_bytes):
                     log_error(f"Lỗi đọc JSON từ ZIP: {e}")
     return json_data, images_dict
 
-def generate_pandoc_docx(data, images_dict):
-    md_text = ""
-    if isinstance(data, dict):
-        md_lines = []
-        pages = data.get("pdf_info", [])
-        for page in pages:
-            if not isinstance(page, dict): continue
-            for block in page.get("para_blocks", page.get("blocks", [])):
-                if not isinstance(block, dict): continue
-                b_type = block.get("type")
-                if b_type in ["text", "title"]:
-                    p_text = ""
-                    for line in block.get("lines", []):
-                        for span in line.get("spans", []):
-                            content = span.get("content", span.get("text", ""))
-                            if span.get("type") == "inline_equation":
-                                p_text += f" {clean_and_wrap_latex(content)} "
-                            else:
-                                p_text += content
-                    if p_text.strip():
-                        md_lines.append(p_text.strip() + "\n\n")
-        md_text = "".join(md_lines)
-    else:
-        md_text = str(data)
 
-    md_text = clean_markdown_for_preview(md_text)
-
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        temp_md_path = os.path.join(tmp_dir, "temp_input.md")
-        with open(temp_md_path, "w", encoding="utf-8") as f:
-            f.write(md_text)
-        for img_name, img_bytes in images_dict.items():
-            with open(os.path.join(tmp_dir, img_name), "wb") as img_f:
-                img_f.write(img_bytes)
-        original_dir = os.getcwd()
-        os.chdir(tmp_dir)
-        try:
-            output_docx = "Output_Native.docx"
-            pypandoc.convert_file("temp_input.md", 'docx', outputfile=output_docx, extra_args=['--standalone', '--extract-media=.'])
-            with open(output_docx, "rb") as f:
-                return f.read()
-        except Exception as e:
-            log_error(f"Lỗi tạo Word Pandoc: {e}")
-            return None
-        finally:
-            os.chdir(original_dir)
-
-
-# --- XỬ LÝ MISTRAL VỚI CƠ CHẾ XOAY VÒNG KEY TỪ api_key_Mistral.txt ---
+# --- XỬ LÝ API MÔ HÌNH AI ---
 def process_with_mistral_with_rotation(file_bytes, file_name, file_type, raw_keys_str):
     if not MISTRAL_AVAILABLE:
         raise Exception("Chưa cài đặt mistralai SDK.")
@@ -237,7 +377,7 @@ def process_with_mistral_with_rotation(file_bytes, file_name, file_type, raw_key
             if hasattr(ocr_response, "pages"):
                 for p_idx, page in enumerate(ocr_response.pages):
                     page_md = page.markdown if hasattr(page, "markdown") else ""
-                    full_markdown += f"\n\n<hr/>\n<h3>Trang {p_idx+1} (Mistral OCR)</h3>\n\n" + page_md
+                    full_markdown += f"\n\n# Trang {p_idx+1}\n\n" + page_md
                     if hasattr(page, "images") and page.images:
                         for img in page.images:
                             if hasattr(img, "id") and hasattr(img, "image_base64") and img.image_base64:
@@ -249,7 +389,10 @@ def process_with_mistral_with_rotation(file_bytes, file_name, file_type, raw_key
                                 except: pass
             
             log_info(f"Mistral OCR thành công với Key số {idx + 1}")
-            return None, clean_markdown_for_preview(full_markdown), images_dict
+            md_clean = clean_markdown_for_preview(full_markdown)
+            # Tạo JSON đại diện cho Preview
+            json_preview = markdown_to_json(md_clean)
+            return json_preview, md_clean, images_dict
             
         except Exception as e:
             last_error = e
@@ -285,7 +428,8 @@ def process_with_docling(file_bytes, file_name, file_type, api_key):
                 if res_fetch.status_code == 200:
                     result_json = res_fetch.json()
                     md = result_json.get("markdown", str(result_json))
-                    return None, clean_markdown_for_preview(md), {}
+                    md_clean = clean_markdown_for_preview(md)
+                    return markdown_to_json(md_clean), md_clean, {}
             elif status == "failure" or status == "failed":
                 raise Exception("Docling conversion task failed.")
     raise Exception("Docling polling timeout.")
@@ -318,7 +462,8 @@ def process_with_mineru(file_bytes, file_name, file_type, api_key):
                 r_zip = requests.get(data.get("full_zip_url"))
                 if r_zip.status_code == 200:
                     found_json, images_dict = extract_zip_and_get_data(r_zip.content)
-                    return found_json, "", images_dict
+                    md_text = json_to_markdown(found_json)
+                    return found_json, md_text, images_dict
             elif data.get("state") == "failed":
                 raise Exception("MinerU xử lý thất bại hoặc Token hết hạn (A0211).")
     raise Exception("MinerU timeout.")
@@ -335,29 +480,37 @@ def process_with_gemini(file_bytes, file_name, file_type, api_key, model_name):
             "Hãy đọc tài liệu này chính xác tuyệt đối. Biểu thức toán học đặt trong cặp đô la ($...$). Trình bày Markdown sạch sẽ."
         ]
     )
-    return None, clean_markdown_for_preview(response.text), {}
+    md_clean = clean_markdown_for_preview(response.text)
+    return markdown_to_json(md_clean), md_clean, {}
 
 
-# --- HÀM RENDER PREVIEW BOX ---
+# --- HÀM RENDER PREVIEW BOX (DÙNG JSON CHO PREVIEW, MARKDOWN CHO PANDOC WORD) ---
 def render_ai_preview_box(ai_label, json_data, markdown_text, images_dict, file_name):
     st.subheader(f"📊 Kết quả từ: `{ai_label}`")
     
-    data_source = json_data if json_data else markdown_text
-    docx_bytes = generate_pandoc_docx(data_source, images_dict) if data_source else None
+    # 1. Đảm bảo có cả JSON (cho Preview) và Markdown (cho Pandoc)
+    if not json_data and markdown_text:
+        json_data = markdown_to_json(markdown_text)
+    elif json_data and not markdown_text:
+        markdown_text = json_to_markdown(json_data)
+
+    # 2. Tạo Word từ Markdown bằng Pandoc
+    docx_bytes = generate_pandoc_docx(markdown_text, images_dict) if markdown_text else None
 
     col1, col2, col3 = st.columns(3)
     with col1:
         if docx_bytes:
             st.download_button(f"📥 Tải Word (Pandoc) [{ai_label}]", docx_bytes, f"{file_name}_{ai_label}.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", type="primary", use_container_width=True, key=f"dl_{ai_label}")
     with col2:
-        if markdown_text or json_data:
-            md_dl = markdown_text if markdown_text else json.dumps(json_data, ensure_ascii=False, indent=2)
-            st.download_button(f"📥 Tải File (.md/.json) [{ai_label}]", md_dl, f"{file_name}_{ai_label}.txt", "text/plain", use_container_width=True, key=f"dl_md_{ai_label}")
+        if markdown_text:
+            st.download_button(f"📥 Tải Markdown (.md) [{ai_label}]", markdown_text, f"{file_name}_{ai_label}.md", "text/markdown", use_container_width=True, key=f"dl_md_{ai_label}")
     with col3:
         if json_data:
             st.download_button(f"📥 Tải JSON [{ai_label}]", json.dumps(json_data, ensure_ascii=False, indent=2), f"{file_name}_{ai_label}.json", "application/json", use_container_width=True, key=f"dl_json_{ai_label}")
 
-    content_to_render = markdown_text if markdown_text else json.dumps(json_data, ensure_ascii=False, indent=2)
+    # 3. Dựng HTML Preview từ dữ liệu JSON + KaTeX
+    preview_body_html = json_to_html_preview_body(json_data, images_dict)
+    
     preview_html = f"""
     <!DOCTYPE html>
     <html>
@@ -366,7 +519,6 @@ def render_ai_preview_box(ai_label, json_data, markdown_text, images_dict, file_
         <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.css">
         <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.js"></script>
         <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/contrib/auto-render.min.js"></script>
-        <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
         <style>
             body {{ font-family: Arial, sans-serif; padding: 10px; background: #fff; color: #2d3748; }}
             .btn-action {{ padding: 8px 16px; color: white; background: #2b6cb0; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; margin-bottom: 10px; }}
@@ -375,10 +527,11 @@ def render_ai_preview_box(ai_label, json_data, markdown_text, images_dict, file_
     </head>
     <body>
         <button class="btn-action" onclick="copyContent()">📋 Sao chép nhanh [{ai_label}] (Dán Word)</button>
-        <div class="preview-card" id="box_{ai_label}"></div>
+        <div class="preview-card" id="box_{ai_label}">
+            {preview_body_html}
+        </div>
         <script>
-        document.getElementById('box_{ai_label}').innerHTML = marked.parse({json.dumps(content_to_render)});
-        setTimeout(() => {{
+        document.addEventListener("DOMContentLoaded", function() {{
             renderMathInElement(document.getElementById('box_{ai_label}'), {{
                 delimiters: [
                     {{left: '$$', right: '$$', display: true}},
@@ -388,7 +541,7 @@ def render_ai_preview_box(ai_label, json_data, markdown_text, images_dict, file_
                 ],
                 throwOnError: false
             }});
-        }}, 300);
+        }});
         function copyContent() {{
             const range = document.createRange();
             range.selectNode(document.getElementById('box_{ai_label}'));
@@ -405,9 +558,11 @@ def render_ai_preview_box(ai_label, json_data, markdown_text, images_dict, file_
     components.html(preview_html, height=550, scrolling=False)
 
 
-# --- GIAO DIỆN CHÍNH (2 TABS) ---
+# ==========================================
+# GIAO DIỆN CHÍNH (2 TABS)
+# ==========================================
 st.title("⚡ p2w.py - Nền tảng Xử lý Đồng thời & Xoay vòng Key Đa AI")
-st.write("Hệ thống hỗ trợ chạy đồng thời/riêng lẻ qua **Mistral** (xoay vòng key từ `api_key_Mistral.txt`), **Docling**, **MinerU** và **Gemini Pro**.")
+st.write("Hệ thống xử lý: **Preview qua JSON + KaTeX** & **Xuất Word qua Pandoc + Markdown**.")
 
 tab1, tab2 = st.tabs([
     "🚀 Tab 1: AI Pipeline (Xoay vòng Key Mistral & Điều khiển AI)", 
@@ -415,7 +570,7 @@ tab1, tab2 = st.tabs([
 ])
 
 # ==========================================
-# TAB 1: XỬ LÝ ĐỒNG THỜI HOẶC TỪNG AI RIÊNG LẺ
+# TAB 1: AI PIPELINE
 # ==========================================
 with tab1:
     st.subheader("🔑 Cấu hình API Keys (Hỗ trợ Đổi và Lưu an toàn)")
@@ -536,7 +691,7 @@ with tab1:
                         err_msg = f"Lỗi xử lý: {str(e)}"
                         log_error(f"Lỗi AI {ai_name}: {err_msg}")
                         st.session_state.ai_results[ai_name] = {
-                            "json": None,
+                            "json": {"blocks": [{"type": "title", "content": f"Lỗi xử lý từ {ai_name}"}, {"type": "text", "content": err_msg}]},
                             "md": f"# Lỗi xử lý từ {ai_name}\n\n> {err_msg}",
                             "imgs": {},
                             "name": base_name
@@ -547,7 +702,7 @@ with tab1:
     elif not pipeline_file and (run_all or run_mistral or run_docling or run_mineru or run_gemini):
         st.warning("Vui lòng tải lên file tài liệu trước khi bấm nút chạy!")
 
-    # HIỂN THỊ 4 KHUNG PREVIEW ĐỘC LẬP
+    # HIỂN THỊ KHUNG PREVIEW CHO TAB 1
     if any(res.get("json") or res.get("md") for res in st.session_state.ai_results.values()):
         st.divider()
         st.subheader("📊 Khung Preview độc lập tương ứng của các AI")
@@ -569,7 +724,7 @@ with tab1:
 
 
 # ==========================================
-# TAB 2: QUẢN LÝ & DỰNG WORD TỪ ZIP, JSON, MD VÀ ẢNH
+# TAB 2: QUẢN LÝ TỆP & DỰNG WORD
 # ==========================================
 with tab2:
     st.subheader("📦 Quản lý file đầu vào: ZIP, JSON, Markdown và Ảnh")
@@ -588,17 +743,21 @@ with tab2:
             if file_ext == "zip":
                 found_json, zip_imgs = extract_zip_and_get_data(package_file.getvalue())
                 tab2_imgs_dict.update(zip_imgs)
-                st.session_state.ai_results["MinerU"] = {"json": found_json, "md": "", "imgs": tab2_imgs_dict, "name": file_base}
-                st.success("Đã nạp gói ZIP thành công vào hệ thống quản lý!")
+                md_converted = json_to_markdown(found_json)
+                st.session_state.ai_results["MinerU"] = {"json": found_json, "md": md_converted, "imgs": tab2_imgs_dict, "name": file_base}
+                st.success("Đã nạp gói ZIP thành công!")
                 st.rerun()
             elif file_ext == "json":
                 json_content = json.loads(package_file.getvalue().decode("utf-8"))
-                st.session_state.ai_results["MinerU"] = {"json": json_content, "md": "", "imgs": tab2_imgs_dict, "name": file_base}
+                md_converted = json_to_markdown(json_content)
+                st.session_state.ai_results["MinerU"] = {"json": json_content, "md": md_converted, "imgs": tab2_imgs_dict, "name": file_base}
                 st.success("Đã nạp file JSON thành công!")
                 st.rerun()
             elif file_ext in ["md", "markdown"]:
                 md_content = package_file.getvalue().decode("utf-8")
-                st.session_state.ai_results["Mistral"] = {"json": None, "md": clean_markdown_for_preview(md_content), "imgs": tab2_imgs_dict, "name": file_base}
+                md_clean = clean_markdown_for_preview(md_content)
+                json_converted = markdown_to_json(md_clean)
+                st.session_state.ai_results["Mistral"] = {"json": json_converted, "md": md_clean, "imgs": tab2_imgs_dict, "name": file_base}
                 st.success("Đã nạp file Markdown thành công!")
                 st.rerun()
         except Exception as e:
@@ -608,10 +767,10 @@ with tab2:
     st.divider()
     res_m = st.session_state.ai_results.get("Mistral", {})
     res_mu = st.session_state.ai_results.get("MinerU", {})
-    if res_m.get("md"):
-        render_ai_preview_box("Workspace Mistral", None, res_m.get("md"), res_m.get("imgs", {}), res_m.get("name", "Document"))
-    if res_mu.get("json"):
-        render_ai_preview_box("Workspace MinerU", res_mu.get("json"), "", res_mu.get("imgs", {}), res_mu.get("name", "Document"))
+    if res_m.get("json") or res_m.get("md"):
+        render_ai_preview_box("Workspace Mistral / Uploaded MD", res_m.get("json"), res_m.get("md"), res_m.get("imgs", {}), res_m.get("name", "Document"))
+    if res_mu.get("json") or res_mu.get("md"):
+        render_ai_preview_box("Workspace MinerU / Uploaded JSON-ZIP", res_mu.get("json"), res_mu.get("md"), res_mu.get("imgs", {}), res_mu.get("name", "Document"))
 
 # --- XEM NHẬT KÝ HỆ THỐNG ---
 st.divider()
