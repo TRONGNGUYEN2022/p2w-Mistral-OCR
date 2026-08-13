@@ -45,7 +45,7 @@ except ImportError:
     GEMINI_AVAILABLE = False
 
 # --- CẤU HÌNH GIAO DIỆN ---
-st.set_page_config(page_title="Universal OCR & AI Text Normalizer to Word", page_icon="🌪️", layout="wide")
+st.set_page_config(page_title="Universal OCR & AI Text Normalizer with Chunking", page_icon="🌪️", layout="wide")
 
 # --- HÀM ĐỌC / LƯU DANH SÁCH API KEY TỪ FILE ---
 KEY_FILE = "Mistral_api_key.txt"
@@ -147,53 +147,85 @@ def extract_images_from_json_obj(j_obj, images_dict):
 
     search_and_extract(j_obj)
 
-def normalize_vietnamese_text_with_gemini(raw_markdown, gemini_api_key, model_name="gemini-2.5-flash"):
-    """Dùng Gemini AI để chuẩn hóa tiếng Việt, sửa lỗi chính tả OCR và định dạng LaTeX toán học"""
+def normalize_text_with_gemini_chunking(raw_markdown, gemini_api_key, model_name="gemini-2.5-pro", chunk_size=12000):
+    """
+    Cơ chế Chunking: Cắt nhỏ tài liệu dài thành các phần (chunk) để gửi lần lượt qua Gemini, 
+    giúp xử lý sách hàng trăm trang mà không bao giờ bị cụt nội dung.
+    """
     if not GEMINI_AVAILABLE or not gemini_api_key.strip():
         log_info("Bỏ qua bước chuẩn hóa Gemini do thiếu thư viện hoặc API Key.")
         return raw_markdown
     
-    try:
-        client = genai.Client(api_key=gemini_api_key.strip())
-        system_instruction = (
-            "Bạn là chuyên gia biên tập tài liệu và xử lý OCR. Nhiệm vụ của bạn là làm sạch và chuẩn hóa nội dung Markdown:\n"
-            "1. Sửa toàn bộ lỗi chính tả tiếng Việt bị sai do OCR (mất dấu, dính chữ, sai dấu thanh).\n"
-            "2. Chuẩn hóa cấu trúc: Gộp các dòng bị ngắt cụt thành đoạn văn hoàn chỉnh, giữ đúng định dạng tiêu đề (#, ##).\n"
-            "3. Chuẩn hóa công thức toán học: Mọi biểu thức toán học, ký hiệu, phân số PHẢI được bọc chuẩn trong cặp dấu đô la ($...$ cho inline hoặc $$...$$ cho block LaTeX).\n"
-            "4. QUAN TRỌNG: Giữ nguyên vẹn 100% các cú pháp hiển thị ảnh dạng Markdown (ví dụ: ![img-0.jpeg](img-0.jpeg) hoặc ![alt](images/abc.png)), không được xóa hoặc đổi tên file trong ngoặc đơn.\n"
-            "5. Chỉ trả về kết quả Markdown đã chuẩn hóa sạch sẽ, không kèm theo giải thích gì thêm."
-        )
+    client = genai.Client(api_key=gemini_api_key.strip())
+    system_instruction = (
+        "Bạn là chuyên gia biên tập tài liệu học thuật và xử lý OCR. "
+        "Nhiệm vụ của bạn là làm sạch và chuẩn hóa đoạn văn bản Markdown được cung cấp:\n"
+        "1. Sửa toàn bộ lỗi chính tả tiếng Việt bị sai do OCR (mất dấu, dính chữ, sai dấu thanh).\n"
+        "2. Chuẩn hóa cấu trúc: Gộp các dòng bị ngắt cụt thành đoạn văn hoàn chỉnh, giữ đúng định dạng tiêu đề (#, ##).\n"
+        "3. Chuẩn hóa công thức toán học: Mọi biểu thức toán học, ký hiệu, phân số PHẢI được bọc chuẩn trong cặp dấu đô la ($...$ cho inline hoặc $$...$$ cho block LaTeX).\n"
+        "4. QUAN TRỌNG: Giữ nguyên vẹn 100% các cú pháp hiển thị ảnh dạng Markdown (ví dụ: ![img-0.jpeg](img-0.jpeg)), không được xóa hoặc đổi tên.\n"
+        "5. Chỉ trả về kết quả nội dung đã chuẩn hóa sạch sẽ của đoạn này."
+    )
 
-        response = client.models.generate_content(
-            model=model_name,
-            contents=[raw_markdown],
-            config=types.GenerateContentConfig(
-                system_instruction=system_instruction,
-                temperature=0.1
+    # Chia nhỏ văn bản thành các đoạn (chunk) dựa theo ký tự hoặc ranh giới đoạn văn
+    paragraphs = raw_markdown.split("\n\n")
+    chunks = []
+    current_chunk = ""
+
+    for p in paragraphs:
+        if len(current_chunk) + len(p) < chunk_size:
+            current_chunk += p + "\n\n"
+        else:
+            if current_chunk:
+                chunks.append(current_chunk)
+            current_chunk = p + "\n\n"
+    if current_chunk:
+        chunks.append(current_chunk)
+
+    log_info(f"Tổng số phần (chunks) cần xử lý qua Gemini: {len(chunks)}")
+    normalized_chunks = []
+    
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+
+    for idx, chunk in enumerate(chunks):
+        status_text.text(f"Đang chuẩn hóa phần {idx+1}/{len(chunks)} qua Gemini AI...")
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=[chunk],
+                config=types.GenerateContentConfig(
+                    system_instruction=system_instruction,
+                    temperature=0.1,
+                    max_output_tokens=65536
+                )
             )
-        )
-        cleaned_text = response.text
-        cleaned_text = cleaned_text.replace("```markdown", "").replace("```", "").strip()
-        log_info("Chuẩn hóa tiếng Việt bằng Gemini thành công.")
-        return cleaned_text
-    except Exception as e:
-        log_error(f"Lỗi khi chuẩn hóa bằng Gemini: {e}")
-        return raw_markdown
+            cleaned_chunk = response.text
+            cleaned_chunk = cleaned_chunk.replace("```markdown", "").replace("```", "").strip()
+            normalized_chunks.append(cleaned_chunk)
+        except Exception as e:
+            log_error(f"Lỗi ở chunk {idx+1}: {e}")
+            normalized_chunks.append(chunk) # Giữ nguyên bản gốc nếu lỗi
+        
+        progress_bar.progress(min((idx + 1) / len(chunks), 1.0))
+
+    status_text.text("Hoàn tất chuẩn hóa toàn bộ tài liệu!")
+    progress_bar.empty()
+    status_text.empty()
+
+    return "\n\n".join(normalized_chunks)
 
 def compile_markdown_to_word(full_markdown, images_dict):
     """Biên dịch Markdown + Ảnh thành file Word (.docx) và ZIP thô, tự động khớp đường dẫn ảnh cho Pandoc"""
-    
-    # Bước tự động sửa lại đường dẫn ảnh trong Markdown để khớp hoàn toàn với images_dict
     fixed_markdown = full_markdown
     def fix_image_path(match):
         alt = match.group(1)
         path = match.group(2)
         filename = os.path.basename(path)
-        # Kiểm tra xem tên file ảnh có tồn tại trong bộ images_dict không
         for k in images_dict.keys():
             if filename in k or k in filename:
                 return f'![]({k})'
-        return match.group(0) # Giữ nguyên nếu không tìm thấy
+        return match.group(0)
 
     fixed_markdown = re.sub(r'!\[(.*?)\]\((.*?)\)', fix_image_path, fixed_markdown)
 
@@ -210,7 +242,6 @@ def compile_markdown_to_word(full_markdown, images_dict):
         img_sub_dir = os.path.join(tmp_dir, "images")
         os.makedirs(img_sub_dir, exist_ok=True)
         
-        # Đưa toàn bộ ảnh vào cả root lẫn thư mục images/ để Pandoc bắt được ở mọi kiểu đường dẫn
         for img_name, img_bytes in images_dict.items():
             clean_name = os.path.basename(img_name)
             with open(os.path.join(tmp_dir, clean_name), "wb") as f_root:
@@ -241,9 +272,9 @@ def compile_markdown_to_word(full_markdown, images_dict):
             os.chdir(original_dir)
 
 # --- GIAO DIỆN CHÍNH (2 TABS) ---
-st.title("🌪️ Universal OCR & AI Text Normalizer to Word")
+st.title("🌪️ Universal OCR & AI Text Normalizer with Chunking")
 
-tab_online, tab_offline = st.tabs(["🚀 Mistral OCR (Online)", "📁 Xử lý Offline (ZIP, JSON, Markdown + AI Fix Tiếng Việt)"])
+tab_online, tab_offline = st.tabs(["🚀 Mistral OCR (Online)", "📁 Xử lý Offline (ZIP, JSON, Markdown + Chunking AI)"])
 
 # ==========================================
 # TAB 1: MISTRAL OCR ONLINE
@@ -379,11 +410,11 @@ with tab_online:
                     st.error(f"Lỗi khi xử lý: {e}")
 
 # ==========================================
-# TAB 2: XỬ LÝ OFFLINE (ZIP, JSON, MD + AI FIX TIẾNG VIỆT)
+# TAB 2: XỬ LÝ OFFLINE (ZIP, JSON, MD + CHUNKING AI)
 # ==========================================
 with tab_offline:
-    st.subheader("📁 Nạp, Chuẩn hóa Tiếng Việt bằng AI & Dựng Word Offline")
-    st.markdown("💡 *Upload bất kỳ file JSON, Markdown, ZIP nào và cung cấp Gemini API Key để AI tự động sửa lỗi tiếng Việt, chuẩn hóa LaTeX rồi đóng gói ra Word.*")
+    st.subheader("📁 Nạp, Chuẩn hóa Tài liệu Dài (122+ Trang) bằng Chunking AI & Dựng Word")
+    st.markdown("💡 *Upload tài liệu lớn (ZIP, JSON, Markdown). Hệ thống sẽ tự động cắt nhỏ thành các phần an toàn, gọi Gemini Pro xử lý sạch sẽ từ đầu đến cuối rồi ghép nối lại hoàn chỉnh.*")
     
     col_gk1, col_gk2 = st.columns(2)
     with col_gk1:
@@ -392,7 +423,7 @@ with tab_offline:
             save_config(st.session_state.saved_gemini_key)
 
         gemini_token_input = st.text_input(
-            "Nhập Gemini API Key (để AI fix lỗi tiếng Việt):", 
+            "Nhập Gemini API Key (cho Chunking AI):", 
             value=st.session_state.saved_gemini_key, 
             type="password", 
             disabled=not st.session_state.gemini_key_editable, 
@@ -409,7 +440,7 @@ with tab_offline:
             st.success("Đã lưu Gemini Key!")
             st.rerun()
     with col_gk2:
-        selected_gemini_model = st.selectbox("Chọn Model Gemini chuẩn hóa:", ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-1.5-flash"], index=0)
+        selected_gemini_model = st.selectbox("Chọn Model Gemini xử lý:", ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-1.5-pro"], index=0)
 
     offline_file = st.file_uploader(
         "Chọn file cấu trúc chính (ZIP, JSON hoặc Markdown)", 
@@ -418,15 +449,15 @@ with tab_offline:
     )
     
     extra_image_files = st.file_uploader(
-        "Chọn các file ảnh bổ sung rời (PNG, JPG, JPEG - tùy chọn)", 
+        "Chọn các file ảnh bổ sung rời (nếu có)", 
         type=["png", "jpg", "jpeg"], 
         accept_multiple_files=True, 
         key="offline_extra_imgs"
     )
     
-    use_ai_normalization = st.checkbox("✨ Sử dụng AI (Gemini) để sửa lỗi chính tả tiếng Việt & chuẩn hóa LaTeX", value=True)
+    use_ai_normalization = st.checkbox("✨ Kích hoạt cơ chế Chunking AI (Xử lý trọn vẹn tài liệu dài hàng trăm trang)", value=True)
 
-    if st.button("⚙️ Xử lý, Chuẩn hóa AI & Dựng file Word"):
+    if st.button("⚙️ Xử lý, Chunking AI Toàn Bộ Tài Liệu & Dựng Word"):
         if not offline_file:
             st.warning("Vui lòng tải lên file dữ liệu cấu trúc chính!")
         else:
@@ -474,7 +505,7 @@ with tab_offline:
                                 md_content = z.read(filename).decode("utf-8")
                                 full_markdown += f"\n\n<!-- File: {filename} -->\n" + md_content
 
-                # 2. Nạp từ file JSON đơn lẻ bất kỳ (như 123_ocr_raw.json hoặc Docling JSON)
+                # 2. Nạp từ file JSON đơn lẻ bất kỳ
                 elif file_extension == "json":
                     j_content = json.loads(file_bytes.decode("utf-8"))
                     json_records.append({"filename": file_name_full, "data": j_content})
@@ -503,14 +534,13 @@ with tab_offline:
                     for img_item in extra_image_files:
                         images_dict[img_item.name] = img_item.getvalue()
 
-                # Bước chuẩn hóa bằng AI (Gemini) nếu được bật
+                # Bước chuẩn hóa toàn bộ bằng Chunking AI nếu được bật
                 if use_ai_normalization:
                     active_g_key = st.session_state.saved_gemini_key.strip()
                     if active_g_key and GEMINI_AVAILABLE:
-                        with st.spinner("Đang dùng Gemini AI chuẩn hóa chính tả tiếng Việt và LaTeX..."):
-                            full_markdown = normalize_vietnamese_text_with_gemini(full_markdown, active_g_key, selected_gemini_model)
+                        full_markdown = normalize_text_with_gemini_chunking(full_markdown, active_g_key, selected_gemini_model)
                     else:
-                        st.warning("Chưa có Gemini API Key nên không thể thực hiện chuẩn hóa AI! Tiến hành xử lý cấu trúc thô...")
+                        st.warning("Chưa có Gemini API Key nên không thể thực hiện Chunking AI! Tiến hành xử lý cấu trúc thô...")
 
                 st.session_state.mistral_json_records = json_records
                 st.session_state.mistral_preview_markdown = full_markdown
@@ -519,7 +549,7 @@ with tab_offline:
 
                 # Biên dịch ra file Word
                 compile_markdown_to_word(full_markdown, images_dict)
-                st.success(f"🎉 Xử lý thành công! Đã chuẩn hóa, bóc tách {len(images_dict)} ảnh và tạo xong file Word!")
+                st.success(f"🎉 Xử lý thành công toàn bộ tài liệu dài! Đã bóc tách {len(images_dict)} ảnh và tạo xong file Word!")
             except Exception as e:
                 log_error(f"Lỗi xử lý file offline: {str(e)}")
                 st.error(f"Lỗi khi xử lý file: {e}")
