@@ -6,8 +6,6 @@ import re
 import zipfile
 import tempfile
 import logging
-from bs4 import BeautifulSoup
-import requests
 import streamlit as st
 import streamlit.components.v1 as components
 import pypandoc
@@ -30,7 +28,7 @@ def log_info(msg):
 def log_error(msg):
     logging.error(msg)
 
-# Import thư viện mistralai SDK
+# Import thư viện mistralai SDK[cite: 1]
 try:
     from mistralai.client import Mistral
     MISTRAL_AVAILABLE = True
@@ -52,7 +50,7 @@ def load_api_keys_from_file():
                     return keys
         except Exception as e:
             log_error(f"Lỗi đọc file {KEY_FILE}: {e}")
-    return ["Asht2uDLjH8WTWnU06dBWdPbpcVQrbt5"] # Key mặc định dự phòng
+    return ["Asht2uDLjH8WTWnU06dBWdPbpcVQrbt5"] # Key mặc định dự phòng[cite: 1]
 
 def save_api_keys_to_file(keys_list):
     try:
@@ -93,10 +91,9 @@ def cleanup_old_temp_files():
                 pass
 
 def extract_images_from_json_obj(j_obj, images_dict):
-    """Hàm phụ trợ bóc tách ảnh base64 trực tiếp nằm trong cấu trúc JSON OCR (như 123_ocr_raw.json)"""
+    """Bóc tách ảnh base64 trực tiếp nằm trong cấu trúc JSON OCR tránh tràn RAM"""
     def search_and_extract(data):
         if isinstance(data, dict):
-            # Nếu có mảng 'images' chuẩn dạng OCR
             if "images" in data and isinstance(data["images"], list):
                 for img_item in data["images"]:
                     if isinstance(img_item, dict):
@@ -118,23 +115,20 @@ def extract_images_from_json_obj(j_obj, images_dict):
     search_and_extract(j_obj)
 
 def compile_markdown_to_word(full_markdown, images_dict):
-    """Hàm chuyển đổi Markdown + Ảnh sang file Word (.docx) và đóng gói ZIP thô chuẩn xác"""
+    """Hàm chuyển đổi Markdown + Ảnh sang file Word (.docx) tối ưu bộ nhớ tạm"""
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
         zip_file.writestr("output.md", full_markdown)
         for img_name, img_bytes in images_dict.items():
             zip_file.writestr(f"images/{img_name}", img_bytes)
-            zip_file.writestr(f"{img_name}", img_bytes) # Lưu cả 2 vị trí trong ZIP
+            zip_file.writestr(f"{img_name}", img_bytes)
     st.session_state.mistral_raw_zip_bytes = zip_buffer.getvalue()
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         temp_md_path = os.path.join(tmp_dir, "temp_input.md")
-        
-        # Tạo thư mục images/ trong thư mục tạm
         img_sub_dir = os.path.join(tmp_dir, "images")
         os.makedirs(img_sub_dir, exist_ok=True)
         
-        # Ghi file ảnh ra cả 2 nơi (ở root tạm và ở subfolder images/)
         for img_name, img_bytes in images_dict.items():
             clean_name = os.path.basename(img_name)
             with open(os.path.join(tmp_dir, clean_name), "wb") as f_root:
@@ -150,7 +144,6 @@ def compile_markdown_to_word(full_markdown, images_dict):
         
         try:
             output_docx = "Output_Document.docx"
-            # Cấu hình Pandoc tìm kiếm tài nguyên ảnh ở cả thư mục hiện tại (.) lẫn thư mục images/
             pypandoc.convert_file(
                 "temp_input.md", 
                 'docx', 
@@ -229,9 +222,9 @@ with tab_online:
         if not mistral_file:
             st.warning("Vui lòng chọn file!")
         elif not active_m_key:
-            st.error("Vui lòng nhập hoặc chọn Mistral API Key!")
+            st.error("Vui lòng nhập hoặc chọn Mistral API Key!")[cite: 1]
         elif not MISTRAL_AVAILABLE:
-            st.error("Chưa cài đặt thư viện `mistralai`.")
+            st.error("Chưa cài đặt thư viện `mistralai`.")[cite: 1]
         else:
             cleanup_old_temp_files()
             original_full_name = mistral_file.name
@@ -304,20 +297,20 @@ with tab_online:
                     st.error(f"Lỗi khi xử lý: {e}")
 
 # ==========================================
-# TAB 2: XỬ LÝ OFFLINE (ZIP, JSON, MD + ẢNH)
+# TAB 2: XỬ LÝ OFFLINE (TỐI ƯU TRÀN RAM CHO FILE ZIP LỚN)
 # ==========================================
 with tab_offline:
-    st.subheader("📁 Nạp và chuẩn hóa file Offline kết hợp thư mục ảnh bổ sung")
-    st.markdown("💡 *Upload file cấu trúc (ZIP, JSON, Markdown) và chọn thêm các file ảnh liên quan. Hệ thống sẽ tự bóc tách ảnh base64 từ JSON và nhúng đầy đủ vào Word.*")
+    st.subheader("📁 Xử lý Offline Tối Ưu (Chống tràn RAM cho file ZIP/JSON lớn)")
+    st.markdown("💡 *Đọc trực tiếp file ZIP qua bộ đệm tạm thời, lọc đúng thư mục ảnh và file cấu trúc JSON/Markdown giúp xử lý mượt mà tài liệu lớn.*")
     
     offline_file = st.file_uploader(
-        "Chọn file cấu trúc chính (ZIP, JSON hoặc Markdown)", 
+        "Chọn file cấu trúc chính (ZIP, JSON hoặc Markdown lớn)", 
         type=["zip", "json", "md"], 
         key="offline_upload_tab"
     )
     
     extra_image_files = st.file_uploader(
-        "Chọn các file ảnh bổ sung rời (PNG, JPG, JPEG - tùy chọn)", 
+        "Chọn các file ảnh bổ sung rời (tùy chọn)", 
         type=["png", "jpg", "jpeg"], 
         accept_multiple_files=True, 
         key="offline_extra_imgs"
@@ -334,77 +327,82 @@ with tab_offline:
             base_name_off = file_name_full.rsplit('.', 1)[0]
             file_extension = file_name_full.split('.')[-1].lower()
 
-            full_markdown = ""
+            full_markdown_list = []
             images_dict = {}
             json_records = []
 
             try:
-                file_bytes = offline_file.getvalue()
-                
-                # 1. Nạp và bóc tách dữ liệu từ file ZIP
+                # Xử lý tối ưu file ZIP thông qua Temporary Directory chống tràn RAM
                 if file_extension == "zip":
-                    with zipfile.ZipFile(io.BytesIO(file_bytes)) as z:
-                        for filename in z.namelist():
-                            if ("images/" in filename or filename.lower().endswith((".png", ".jpg", ".jpeg"))) and not filename.endswith("/"):
-                                img_name = os.path.basename(filename)
-                                images_dict[img_name] = z.read(filename)
-                            elif filename.endswith(".json") and not filename.startswith("__MACOSX"):
-                                try:
-                                    j_content = json.loads(z.read(filename).decode("utf-8"))
-                                    json_records.append({"filename": filename, "data": j_content})
-                                    
-                                    # Bóc tách ảnh base64 từ bên trong JSON nếu có
-                                    extract_images_from_json_obj(j_content, images_dict)
-                                    
-                                    if "pages" in j_content:
-                                        for p_idx, page in enumerate(j_content["pages"]):
-                                            p_md = page.get("markdown", "")
-                                            full_markdown += f"\n\n<h3>Trang {p_idx+1}</h3>\n\n" + p_md
-                                    elif "ketQuaOcr" in j_content and "pages" in j_content["ketQuaOcr"]:
-                                        for p_obj in j_content["ketQuaOcr"]["pages"]:
-                                            p_idx = p_obj.get("index", 0)
-                                            p_md = p_obj.get("markdown", "")
-                                            full_markdown += f"\n\n<h3>Trang {p_idx+1}</h3>\n\n" + p_md
-                                    elif "pdf_info" in j_content:
-                                        full_markdown += f"\n\n" + json.dumps(j_content, ensure_ascii=False, indent=2)
-                                    else:
-                                        full_markdown += f"\n\n<!-- File: {filename} -->\n" + json.dumps(j_content, ensure_ascii=False, indent=2)
-                                except Exception as e:
-                                    log_error(f"Lỗi đọc file json trong zip: {e}")
-                            elif filename.endswith(".md") and not filename.startswith("__MACOSX"):
-                                md_content = z.read(filename).decode("utf-8")
-                                full_markdown += f"\n\n<!-- File: {filename} -->\n" + md_content
+                    with tempfile.TemporaryDirectory() as tmp_extract_dir:
+                        with zipfile.ZipFile(io.BytesIO(offline_file.getvalue())) as z:
+                            z.extractall(tmp_extract_dir)
+                        
+                        # Duyệt qua các file đã giải nén an toàn
+                        for root, dirs, files in os.walk(tmp_extract_dir):
+                            for file in files:
+                                full_path = os.path.join(root, file)
+                                rel_path = os.path.relpath(full_path, tmp_extract_dir)
+                                
+                                if "__MACOSX" in rel_path:
+                                    continue
+                                
+                                if "images/" in rel_path.replace("\\", "/") or file.lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
+                                    with open(full_path, "rb") as img_f:
+                                        images_dict[file] = img_f.read()
+                                elif file.endswith(".json"):
+                                    try:
+                                        with open(full_path, "r", encoding="utf-8") as j_f:
+                                            j_content = json.load(j_f)
+                                        json_records.append({"filename": rel_path, "data": j_content})
+                                        extract_images_from_json_obj(j_content, images_dict)
+                                        
+                                        if "pages" in j_content:
+                                            for p_idx, page in enumerate(j_content["pages"]):
+                                                p_md = page.get("markdown", "")
+                                                full_markdown_list.append(f"\n\n<h3>Trang {p_idx+1}</h3>\n\n{p_md}")
+                                        elif "ketQuaOcr" in j_content and "pages" in j_content["ketQuaOcr"]:
+                                            for p_obj in j_content["ketQuaOcr"]["pages"]:
+                                                p_idx = p_obj.get("index", 0)
+                                                p_md = p_obj.get("markdown", "")
+                                                full_markdown_list.append(f"\n\n<h3>Trang {p_idx+1}</h3>\n\n{p_md}")
+                                        elif "pdf_info" in j_content:
+                                            full_markdown_list.append(json.dumps(j_content, ensure_ascii=False, indent=2))
+                                        else:
+                                            full_markdown_list.append(json.dumps(j_content, ensure_ascii=False, indent=2))
+                                    except Exception as e:
+                                        log_error(f"Lỗi đọc JSON {file}: {e}")
+                                elif file.endswith(".md"):
+                                    with open(full_path, "r", encoding="utf-8", errors="ignore") as md_f:
+                                        full_markdown_list.append(md_f.read())
 
-                # 2. Nạp từ file JSON đơn lẻ (ví dụ 123_ocr_raw.json)
+                # Xử lý file JSON đơn lẻ
                 elif file_extension == "json":
-                    j_content = json.loads(file_bytes.decode("utf-8"))
+                    j_content = json.loads(offline_file.getvalue().decode("utf-8"))
                     json_records.append({"filename": file_name_full, "data": j_content})
-                    
-                    # Bóc tách tất cả ảnh base64 trong JSON
                     extract_images_from_json_obj(j_content, images_dict)
                     
                     if "pages" in j_content:
                         for p_idx, page in enumerate(j_content["pages"]):
-                            p_md = page.get("markdown", "")
-                            full_markdown += f"\n\n<h3>Trang {p_idx+1}</h3>\n\n" + p_md
+                            full_markdown_list.append(f"\n\n<h3>Trang {p_idx+1}</h3>\n\n" + page.get("markdown", ""))
                     elif "ketQuaOcr" in j_content and "pages" in j_content["ketQuaOcr"]:
                         for p_obj in j_content["ketQuaOcr"]["pages"]:
-                            p_idx = p_obj.get("index", 0)
-                            p_md = p_obj.get("markdown", "")
-                            full_markdown += f"\n\n<h3>Trang {p_idx+1}</h3>\n\n" + p_md
+                            full_markdown_list.append(f"\n\n<h3>Trang {p_obj.get('index', 0)+1}</h3>\n\n" + p_obj.get("markdown", ""))
                     else:
-                        full_markdown = json.dumps(j_content, ensure_ascii=False, indent=2)
+                        full_markdown_list.append(json.dumps(j_content, ensure_ascii=False, indent=2))
 
-                # 3. Nạp từ file Markdown đơn lẻ (.md)
+                # Xử lý file Markdown đơn lẻ
                 elif file_extension == "md":
-                    full_markdown = file_bytes.decode("utf-8")
+                    full_markdown_list.append(offline_file.getvalue().decode("utf-8", errors="ignore"))
 
-                # 4. Gộp các ảnh upload rời từ giao diện
+                # Gộp ảnh rời bổ sung từ giao diện
                 if extra_image_files:
                     for img_item in extra_image_files:
                         images_dict[img_item.name] = img_item.getvalue()
 
-                # Cơ chế chuẩn hóa (Normalization)
+                full_markdown = "".join(full_markdown_list)
+
+                # Cơ chế chuẩn hóa
                 if normalization_option:
                     full_markdown = re.sub(r'\n{3,}', '\n\n', full_markdown)
                     full_markdown = full_markdown.replace("-\n", "")
@@ -416,9 +414,9 @@ with tab_offline:
 
                 # Biên dịch ra file Word
                 compile_markdown_to_word(full_markdown, images_dict)
-                st.success(f"🎉 Nạp thành công! Đã bóc tách {len(images_dict)} ảnh và tạo file Word hoàn chỉnh!")
+                st.success(f"🎉 Xử lý tối ưu thành công! Đã bóc tách {len(images_dict)} ảnh và tạo xong file Word!")
             except Exception as e:
-                log_error(f"Lỗi xử lý file offline: {str(e)}")
+                log_error(f"Lỗi xử lý file offline tối ưu: {str(e)}")
                 st.error(f"Lỗi khi đọc file cấu trúc: {e}")
 
 # ==========================================
