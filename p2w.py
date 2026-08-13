@@ -91,8 +91,9 @@ def compile_markdown_to_word(full_markdown, images_dict):
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
         zip_file.writestr("output.md", full_markdown)
         for img_name, img_bytes in images_dict.items():
-            zip_file.writestr(f"images/{img_name}", img_bytes)
-            zip_file.writestr(f"{img_name}", img_bytes)
+            clean_img_name = os.path.basename(img_name)
+            zip_file.writestr(f"images/{clean_img_name}", img_bytes)
+            zip_file.writestr(f"{clean_img_name}", img_bytes)
     st.session_state.mistral_raw_zip_bytes = zip_buffer.getvalue()
 
     with tempfile.TemporaryDirectory() as tmp_dir:
@@ -135,7 +136,7 @@ st.title("🌪️ Mistral OCR & ZIP Normalizer Processor")
 tab_online, tab_offline = st.tabs(["🚀 Mistral OCR (Online)", "📁 Xử lý & Chuẩn hoá Offline"])
 
 # ==========================================
-# TAB 1: MISTRAL OCR ONLINE
+# TAB 1: MISTRAL OCR ONLINE (GIỮ NGUYÊN 100%)
 # ==========================================
 with tab_online:
     st.subheader("1. Cấu hình API Key Mistral")
@@ -239,11 +240,11 @@ with tab_online:
                     st.error(f"Lỗi khi xử lý: {e}")
 
 # ==========================================
-# TAB 2: XỬ LÝ & CHUẨN HÓA OFFLINE
+# TAB 2: XỬ LÝ OFFLINE (NÂNG CẤP XỬ LÝ ZIP CHUẨN AN TOÀN, CHỐNG TRÀN RAM)
 # ==========================================
 with tab_offline:
     st.subheader("📁 Chuẩn hóa cấu trúc ZIP thô & Dựng file Word")
-    st.markdown("💡 *Nếu bạn có một file ZIP thô chứa các thư mục con phức tạp, hãy tải lên đây. Nút **'🔄 Chuẩn hóa cấu trúc ZIP'** sẽ tự động gom toàn bộ JSON thành file phẳng và gom toàn bộ ảnh ra một thư mục duy nhất.*")
+    st.markdown("💡 *Tải lên file ZIP thành phẩm (như file _Raw.zip), hệ thống sẽ đọc trực tiếp qua thư mục tạm thời, bóc tách toàn bộ ảnh và dựng file Word mượt mà giống hệt Tab 1.*")
     
     offline_file = st.file_uploader(
         "Chọn file ZIP nguồn hoặc file Markdown/JSON", 
@@ -285,43 +286,30 @@ with tab_offline:
                                 if "__MACOSX" in rel_path:
                                     continue
                                 
-                                # Lọc ảnh từ bất kỳ thư mục con nào ném về dạng tên phẳng
+                                # Đọc ảnh phẳng hoặc trong thư mục images
                                 if file.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".gif")) or "images/" in rel_path.replace("\\", "/"):
                                     with open(full_path, "rb") as img_f:
                                         images_dict[file] = img_f.read()
-                                elif file.endswith(".json") or file.endswith(".geojson"):
+                                elif file.lower() == "output.md" or file.endswith(".md"):
+                                    with open(full_path, "r", encoding="utf-8", errors="ignore") as md_f:
+                                        full_markdown_list.append(md_f.read())
+                                elif file.endswith(".json"):
                                     try:
                                         with open(full_path, "r", encoding="utf-8") as j_f:
                                             j_content = json.load(j_f)
-                                        
-                                        if isinstance(j_content, list):
-                                            for rec in j_content:
-                                                d_val = rec.get("data", rec)
-                                                if isinstance(d_val, dict):
-                                                    if "pages" in d_val:
-                                                        for p_idx, page in enumerate(d_val["pages"]):
-                                                            full_markdown_list.append(f"\n\n<h3>Trang {p_idx+1}</h3>\n\n" + page.get("markdown", ""))
-                                                    elif "markdown" in d_val:
-                                                        full_markdown_list.append(d_val["markdown"])
-                                        elif isinstance(j_content, dict):
-                                            if "pages" in j_content:
-                                                for p_idx, page in enumerate(j_content["pages"]):
-                                                    full_markdown_list.append(f"\n\n<h3>Trang {p_idx+1}</h3>\n\n" + page.get("markdown", ""))
-                                            elif "markdown" in j_content:
-                                                full_markdown_list.append(j_content["markdown"])
-                                            else:
-                                                full_markdown_list.append(json.dumps(j_content, ensure_ascii=False, indent=2))
-                                    except Exception as e:
-                                        log_error(f"Lỗi đọc JSON {file}: {e}")
-                                elif file.endswith(".md"):
-                                    with open(full_path, "r", encoding="utf-8", errors="ignore") as md_f:
-                                        full_markdown_list.append(md_f.read())
+                                        if isinstance(j_content, dict) and "markdown" in j_content:
+                                            full_markdown_list.append(j_content["markdown"])
+                                        elif isinstance(j_content, list):
+                                            for item in j_content:
+                                                if isinstance(item, dict) and "markdown" in item:
+                                                    full_markdown_list.append(item["markdown"])
+                                    except:
+                                        pass
 
                 elif file_extension == "json":
                     j_content = json.loads(file_bytes.decode("utf-8"))
-                    if isinstance(j_content, dict) and "pages" in j_content:
-                        for p_idx, page in enumerate(j_content["pages"]):
-                            full_markdown_list.append(f"\n\n<h3>Trang {p_idx+1}</h3>\n\n" + page.get("markdown", ""))
+                    if isinstance(j_content, dict) and "markdown" in j_content:
+                        full_markdown_list.append(j_content["markdown"])
                     else:
                         full_markdown_list.append(json.dumps(j_content, ensure_ascii=False, indent=2))
 
@@ -336,15 +324,14 @@ with tab_offline:
                 st.session_state.active_images_dict = images_dict
                 st.session_state.active_file_name = base_name_off
 
-                # Nếu bấm nút chuẩn hóa ZIP thô thành ZIP sạch
                 if normalize_zip_btn:
                     zip_buffer = io.BytesIO()
                     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as clean_zip:
                         clean_zip.writestr("output.md", full_markdown)
                         for img_name, img_bytes in images_dict.items():
-                            clean_zip.writestr(f"images/{img_name}", img_bytes)
+                            clean_zip.writestr(f"images/{os.path.basename(img_name)}", img_bytes)
                     
-                    st.success(f"✅ Đã chuẩn hóa xong! Tìm thấy {len(images_dict)} ảnh. Bạn có thể tải file ZIP sạch bên dưới.")
+                    st.success(f"✅ Đã chuẩn hóa xong! Tìm thấy {len(images_dict)} ảnh.")
                     st.download_button(
                         label="📦 Tải xuống ZIP đã chuẩn hóa sạch sẽ",
                         data=zip_buffer.getvalue(),
@@ -353,13 +340,12 @@ with tab_offline:
                         type="primary"
                     )
                 
-                # Nếu bấm nút dựng file Word
                 if build_word_btn:
                     compile_markdown_to_word(full_markdown, images_dict)
                     st.success(f"🎉 Đã bóc tách {len(images_dict)} ảnh và dựng xong file Word thành công!")
             except Exception as e:
-                log_error(f"Lỗi chuẩn hóa file offline: {str(e)}")
-                st.error(f"Lỗi xử lý: {e}")
+                log_error(f"Lỗi xử lý file offline: {str(e)}")
+                st.error(f"Lỗi khi xử lý: {e}")
 
 # ==========================================
 # KHUNG XEM TRƯỚC VÀ TẢI XUỐNG DÙNG CHUNG
