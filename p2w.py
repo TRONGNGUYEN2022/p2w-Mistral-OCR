@@ -138,7 +138,7 @@ st.title("🌪️ Mistral OCR & ZIP Normalizer Processor")
 tab_online, tab_offline = st.tabs(["🚀 Mistral OCR (Online)", "📁 Xử lý & Chuẩn hoá Offline"])
 
 # ==========================================
-# TAB 1: MISTRAL OCR ONLINE (GIỮ NGUYÊN 100%)
+# TAB 1: MISTRAL OCR ONLINE (GIỮ NGUYÊN 100% GỐC)
 # ==========================================
 with tab_online:
     st.subheader("1. Cấu hình API Key Mistral")
@@ -242,20 +242,20 @@ with tab_online:
                     st.error(f"Lỗi khi xử lý: {e}")
 
 # ==========================================
-# TAB 2: XỬ LÝ OFFLINE (TỐI ƯU SIÊU TỐC CHO CẢ FILE JSON HOẶC MARKDOWN ĐƠN LẺ KHÔNG CẦN ẢNH)
+# TAB 2: XỬ LÝ OFFLINE (NÂNG CẤP ĐỌC ZIP/JSON/MD AN TOÀN SIÊU TỐC)
 # ==========================================
 with tab_offline:
     st.subheader("📁 Xử lý Offline siêu tốc từ ZIP, JSON hoặc Markdown")
-    st.markdown("💡 *Hỗ trợ xử lý nhanh file JSON hoặc Markdown đơn lẻ (hoặc file ZIP). Không bắt buộc phải có file ảnh.*")
+    st.markdown("💡 *Hỗ trợ xử lý trực tiếp file ZIP, file JSON hoặc Markdown độc lập mà không bắt buộc phải có ảnh.*")
     
     offline_file = st.file_uploader(
-        "Chọn file cấu trúc chính (ZIP, JSON hoặc Markdown)", 
+        "Chọn file nguồn (ZIP, JSON hoặc Markdown)", 
         type=["zip", "md", "json", "markdown"], 
         key="offline_upload_tab"
     )
     
     offline_images = st.file_uploader(
-        "🖼️ Tải kèm hình ảnh (tùy chọn - chỉ dùng nếu file JSON/MD gọi tên ảnh)",
+        "🖼️ Tải kèm hình ảnh (tùy chọn - chỉ dùng nếu file cần hiển thị ảnh)",
         type=["png", "jpg", "jpeg", "webp"],
         accept_multiple_files=True,
         key="offline_images_upload"
@@ -275,7 +275,6 @@ with tab_offline:
             full_markdown_list = []
             images_dict = {}
 
-            # Nạp ảnh đính kèm bổ sung (nếu người dùng có tải lên)
             if offline_images:
                 for img_file in offline_images:
                     images_dict[img_file.name] = img_file.getvalue()
@@ -327,7 +326,7 @@ with tab_offline:
                             full_markdown_list.append(j_content["markdown"])
                         else:
                             full_markdown_list.append(json.dumps(j_content, ensure_ascii=False, indent=2))
-                    except Exception as e:
+                    except:
                         full_markdown_list.append(file_bytes.decode("utf-8", errors="ignore"))
 
                 elif file_extension in ["md", "markdown"]:
@@ -342,7 +341,7 @@ with tab_offline:
                 st.session_state.active_file_name = base_name_off
 
                 compile_markdown_to_word(full_markdown, images_dict)
-                st.success(f"🎉 Đã xử lý xong văn bản và dựng file Word thành công!")
+                st.success(f"🎉 Đã xử lý xong và dựng file Word thành công!")
             except Exception as e:
                 log_error(f"Lỗi xử lý file offline: {str(e)}")
                 st.error(f"Lỗi xử lý: {e}")
@@ -395,10 +394,11 @@ if st.session_state.mistral_preview_markdown:
         raw_path = match.group(2)
         target_name = os.path.basename(raw_path)
         matched_bytes = None
-        for k, v in st.session_state.active_images_dict.items():
-            if target_name in k or k in target_name:
-                matched_bytes = v
-                break
+        if st.session_state.active_images_dict:
+            for k, v in st.session_state.active_images_dict.items():
+                if target_name in k or k in target_name:
+                    matched_bytes = v
+                    break
         if matched_bytes:
             b64_data = base64.b64encode(matched_bytes).decode('utf-8')
             return f'<div style="text-align: center; margin: 20px 0;"><img src="data:image/jpeg;base64,{b64_data}" style="max-width: 450px; border-radius: 8px; border: 1px solid #2d3748;" alt="{alt_text}" /></div>'
