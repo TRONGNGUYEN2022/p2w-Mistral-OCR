@@ -36,9 +36,8 @@ except ImportError:
     MISTRAL_AVAILABLE = False
 
 # --- CẤU HÌNH GIAO DIỆN ---
-st.set_page_config(page_title="Mistral OCR & Offline Universal Processor", page_icon="🌪️", layout="wide")
+st.set_page_config(page_title="Mistral OCR & ZIP Normalizer Processor", page_icon="🌪️", layout="wide")
 
-# --- HÀM ĐỌC / LƯU DANH SÁCH API KEY TỪ FILE Mistral_api_key.txt ---
 KEY_FILE = "Mistral_api_key.txt"
 
 def load_api_keys_from_file():
@@ -59,7 +58,6 @@ def save_api_keys_to_file(keys_list):
     except Exception as e:
         log_error(f"Lỗi ghi file {KEY_FILE}: {e}")
 
-# --- KHỞI TẠO SESSION STATE ---
 if "mistral_key_editable" not in st.session_state:
     st.session_state.mistral_key_editable = False
 
@@ -77,10 +75,7 @@ if "active_images_dict" not in st.session_state:
     st.session_state.active_images_dict = {}
 if "active_file_name" not in st.session_state:
     st.session_state.active_file_name = "Document"
-if "mistral_json_records" not in st.session_state:
-    st.session_state.mistral_json_records = []
 
-# --- HÀM XỬ LÝ PHỤ TRỢ ---
 def cleanup_old_temp_files():
     root_dir = "."
     for f_name in os.listdir(root_dir):
@@ -90,32 +85,8 @@ def cleanup_old_temp_files():
             except:
                 pass
 
-def extract_images_from_json_obj(j_obj, images_dict):
-    """Hàm phụ trợ bóc tách ảnh base64 trực tiếp nằm trong cấu trúc JSON OCR"""
-    def search_and_extract(data):
-        if isinstance(data, dict):
-            if "images" in data and isinstance(data["images"], list):
-                for img_item in data["images"]:
-                    if isinstance(img_item, dict):
-                        img_id = img_item.get("id") or img_item.get("name")
-                        b64_str = img_item.get("image_base64") or img_item.get("base64") or img_item.get("data")
-                        if img_id and b64_str:
-                            if "," in b64_str:
-                                b64_str = b64_str.split(",")[1]
-                            try:
-                                images_dict[img_id] = base64.b64decode(b64_str)
-                            except Exception as e:
-                                log_error(f"Lỗi giải mã base64 ảnh {img_id}: {e}")
-            for v in data.values():
-                search_and_extract(v)
-        elif isinstance(data, list):
-            for item in data:
-                search_and_extract(item)
-
-    search_and_extract(j_obj)
-
 def compile_markdown_to_word(full_markdown, images_dict):
-    """Hàm chuyển đổi Markdown + Ảnh sang file Word (.docx) và đóng gói ZIP thô chuẩn xác"""
+    """Hàm chuyển đổi Markdown + Ảnh sang file Word (.docx) và đóng gói ZIP"""
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
         zip_file.writestr("output.md", full_markdown)
@@ -158,23 +129,16 @@ def compile_markdown_to_word(full_markdown, images_dict):
         finally:
             os.chdir(original_dir)
 
-# --- GIAO DIỆN CHÍNH (2 TABS) ---
-st.title("🌪️ Mistral OCR & Offline Universal Processor")
+# --- GIAO DIỆN CHÍNH ---
+st.title("🌪️ Mistral OCR & ZIP Normalizer Processor")
 
-tab_online, tab_offline = st.tabs(["🚀 Mistral OCR (Online)", "📁 Xử lý Offline (ZIP, JSON, MD + Ảnh)"])
+tab_online, tab_offline = st.tabs(["🚀 Mistral OCR (Online)", "📁 Xử lý & Chuẩn hoá Offline"])
 
 # ==========================================
 # TAB 1: MISTRAL OCR ONLINE
 # ==========================================
 with tab_online:
     st.subheader("1. Cấu hình API Key Mistral")
-
-    col_link1, col_link2 = st.columns([3, 1])
-    with col_link1:
-        st.markdown("💡 *Chọn key từ danh sách bên dưới hoặc chỉnh sửa/lưu trực tiếp vào file `Mistral_api_key.txt`.*")
-    with col_link2:
-        st.markdown("[🔗 Get API Key](https://console.mistral.ai/)", unsafe_allow_html=True)
-
     current_keys = load_api_keys_from_file()
     selected_key_from_list = st.selectbox(
         "Chọn Mistral API Key từ danh sách:",
@@ -205,12 +169,9 @@ with tab_online:
             st.session_state.selected_mistral_key = cleaned_key
             st.session_state.mistral_key_editable = False
             st.success("Đã lưu API Key thành công!")
-            log_info("Đã cập nhật Mistral API Key mới.")
             st.rerun()
 
     st.divider()
-
-    st.subheader("2. Tải lên tài liệu (PDF hoặc Ảnh)")
     mistral_file = st.file_uploader(
         "Chọn file PDF hoặc hình ảnh (PNG, JPG, JPEG) để xử lý OCR", 
         type=["pdf", "png", "jpg", "jpeg"], 
@@ -229,14 +190,11 @@ with tab_online:
             cleanup_old_temp_files()
             original_full_name = mistral_file.name
             base_name_only = original_full_name.rsplit('.', 1)[0]
-            log_info(f"Bắt đầu xử lý Mistral OCR cho file: {original_full_name}")
-
-            with st.spinner("Đang gửi file lên Mistral OCR API và gom dữ liệu JSON/Markdown..."):
+            with st.spinner("Đang gửi file lên Mistral OCR API..."):
                 try:
                     client = Mistral(api_key=active_m_key)
                     file_bytes = mistral_file.getvalue()
                     base64_file = base64.b64encode(file_bytes).decode('utf-8')
-
                     file_ext = original_full_name.split('.')[-1].lower()
                     if file_ext == 'pdf':
                         doc_payload = {"type": "document_url", "document_url": f"data:application/pdf;base64,{base64_file}"}
@@ -254,22 +212,11 @@ with tab_online:
                     
                     full_markdown = ""
                     images_dict = {}
-                    json_records = []
-                    
                     if hasattr(ocr_response, "pages"):
                         for idx, page in enumerate(ocr_response.pages):
                             page_md = page.markdown if hasattr(page, "markdown") else ""
-                            page_md = re.sub(r'!\[(.*?)\]\([^)]*?(img[_-]\d+\.(?:jpeg\vert{}jpg\vert{}png))\)', r'![\1](\2)', page_md)
-                            page_md_safe = re.sub(r'^\s*---\s*$', '<hr/>', page_md, flags=re.MULTILINE)
-                            
-                            full_markdown += f"\n\n<hr/>\n<h3>Trang {idx+1}</h3>\n\n" + page_md_safe
-                            
-                            page_json_data = {
-                                "page_index": idx + 1,
-                                "markdown": page_md,
-                                "images_count": len(page.images) if hasattr(page, "images") and page.images else 0
-                            }
-                            json_records.append(page_json_data)
+                            page_md = re.sub(r'!\[(.*?)\]\([^)]*?(img[_-]\d+\.(?:jpeg|jpg|png))\)', r'![\1](\2)', page_md)
+                            full_markdown += f"\n\n<hr/>\n<h3>Trang {idx+1}</h3>\n\n" + page_md
                             
                             if hasattr(page, "images") and page.images:
                                 for img in page.images:
@@ -278,49 +225,41 @@ with tab_online:
                                         img_b64 = img.image_base64
                                         if "," in img_b64: img_b64 = img_b64.split(",")[1]
                                         try:
-                                            img_data_decoded = base64.b64decode(img_b64)
-                                            img_filename = img_id if img_id.lower().endswith((".jpeg", ".jpg", ".png")) else f"{img_id}.jpeg"
-                                            images_dict[img_filename] = img_data_decoded
+                                            images_dict[img_id if img_id.lower().endswith((".jpeg", ".jpg", ".png")) else f"{img_id}.jpeg"] = base64.b64decode(img_b64)
                                         except: 
                                             pass
 
-                    st.session_state.mistral_json_records = json_records
                     st.session_state.mistral_preview_markdown = full_markdown
                     st.session_state.active_images_dict = images_dict
                     st.session_state.active_file_name = base_name_only
 
                     compile_markdown_to_word(full_markdown, images_dict)
-                    log_info("Xử lý Mistral OCR thành công.")
                     st.success("🎉 Phân tích server Mistral OCR thành công!")
                 except Exception as e:
-                    log_error(f"Lỗi phân tích Mistral OCR: {str(e)}")
                     st.error(f"Lỗi khi xử lý: {e}")
 
 # ==========================================
-# TAB 2: XỬ LÝ OFFLINE (TỐI ƯU BỘ NHỚ AN TOÀN)
+# TAB 2: XỬ LÝ & CHUẨN HÓA OFFLINE
 # ==========================================
 with tab_offline:
-    st.subheader("📁 Xử lý Offline Siêu Tốc & Chống Tràn RAM")
-    st.markdown("💡 *Sử dụng bộ đệm tạm thời `tempfile` để bóc tách file ZIP sách lớn hàng trăm trang một cách an toàn.*")
+    st.subheader("📁 Chuẩn hóa cấu trúc ZIP thô & Dựng file Word")
+    st.markdown("💡 *Nếu bạn có một file ZIP thô chứa các thư mục con phức tạp, hãy tải lên đây. Nút **'🔄 Chuẩn hóa cấu trúc ZIP'** sẽ tự động gom toàn bộ JSON thành file phẳng và gom toàn bộ ảnh ra một thư mục duy nhất.*")
     
     offline_file = st.file_uploader(
-        "Chọn file cấu trúc chính (ZIP, JSON hoặc Markdown)", 
-        type=["zip", "json", "md"], 
+        "Chọn file ZIP nguồn hoặc file Markdown/JSON", 
+        type=["zip", "md", "json"], 
         key="offline_upload_tab"
     )
     
-    extra_image_files = st.file_uploader(
-        "Chọn các file ảnh bổ sung rời (tùy chọn)", 
-        type=["png", "jpg", "jpeg"], 
-        accept_multiple_files=True, 
-        key="offline_extra_imgs"
-    )
-    
-    normalization_option = st.checkbox("✨ Kích hoạt cơ chế làm sạch & chuẩn hóa định dạng văn bản", value=True, key="off_norm")
+    col_act1, col_act2 = st.columns(2)
+    with col_act1:
+        normalize_zip_btn = st.button("🔄 Chuẩn hóa cấu trúc ZIP (Gom JSON & Phẳng hóa Ảnh)", type="secondary", use_container_width=True)
+    with col_act2:
+        build_word_btn = st.button("⚙️ Dựng file Word ngay lập tức", type="primary", use_container_width=True)
 
-    if st.button("⚙️ Xử lý, Nhúng ảnh & Dựng file Word Offline"):
+    if normalize_zip_btn or build_word_btn:
         if not offline_file:
-            st.warning("Vui lòng tải lên file dữ liệu cấu trúc chính!")
+            st.warning("Vui lòng tải lên file nguồn trước!")
         else:
             cleanup_old_temp_files()
             file_name_full = offline_file.name
@@ -329,12 +268,10 @@ with tab_offline:
 
             full_markdown_list = []
             images_dict = {}
-            json_records = []
 
             try:
                 file_bytes = offline_file.getvalue()
                 
-                # Xử lý file ZIP an toàn thông qua Temporary Directory
                 if file_extension == "zip":
                     with tempfile.TemporaryDirectory() as tmp_extract_dir:
                         with zipfile.ZipFile(io.BytesIO(file_bytes)) as z:
@@ -348,14 +285,14 @@ with tab_offline:
                                 if "__MACOSX" in rel_path:
                                     continue
                                 
-                                if "images/" in rel_path.replace("\\", "/") or file.lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
+                                # Lọc ảnh từ bất kỳ thư mục con nào ném về dạng tên phẳng
+                                if file.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".gif")) or "images/" in rel_path.replace("\\", "/"):
                                     with open(full_path, "rb") as img_f:
                                         images_dict[file] = img_f.read()
-                                elif file.endswith(".json"):
+                                elif file.endswith(".json") or file.endswith(".geojson"):
                                     try:
                                         with open(full_path, "r", encoding="utf-8") as j_f:
                                             j_content = json.load(j_f)
-                                        json_records.append({"filename": rel_path, "data": j_content})
                                         
                                         if isinstance(j_content, list):
                                             for rec in j_content:
@@ -366,12 +303,12 @@ with tab_offline:
                                                             full_markdown_list.append(f"\n\n<h3>Trang {p_idx+1}</h3>\n\n" + page.get("markdown", ""))
                                                     elif "markdown" in d_val:
                                                         full_markdown_list.append(d_val["markdown"])
-                                                    else:
-                                                        full_markdown_list.append(json.dumps(d_val, ensure_ascii=False, indent=2))
                                         elif isinstance(j_content, dict):
                                             if "pages" in j_content:
                                                 for p_idx, page in enumerate(j_content["pages"]):
                                                     full_markdown_list.append(f"\n\n<h3>Trang {p_idx+1}</h3>\n\n" + page.get("markdown", ""))
+                                            elif "markdown" in j_content:
+                                                full_markdown_list.append(j_content["markdown"])
                                             else:
                                                 full_markdown_list.append(json.dumps(j_content, ensure_ascii=False, indent=2))
                                     except Exception as e:
@@ -380,51 +317,52 @@ with tab_offline:
                                     with open(full_path, "r", encoding="utf-8", errors="ignore") as md_f:
                                         full_markdown_list.append(md_f.read())
 
-                # Xử lý JSON đơn lẻ
                 elif file_extension == "json":
                     j_content = json.loads(file_bytes.decode("utf-8"))
-                    json_records.append({"filename": file_name_full, "data": j_content})
-                    if isinstance(j_content, list):
-                        for rec in j_content:
-                            d_val = rec.get("data", rec)
-                            if isinstance(d_val, dict) and "pages" in d_val:
-                                for p_idx, page in enumerate(d_val["pages"]):
-                                    full_markdown_list.append(f"\n\n<h3>Trang {p_idx+1}</h3>\n\n" + page.get("markdown", ""))
-                    elif isinstance(j_content, dict) and "pages" in j_content:
+                    if isinstance(j_content, dict) and "pages" in j_content:
                         for p_idx, page in enumerate(j_content["pages"]):
                             full_markdown_list.append(f"\n\n<h3>Trang {p_idx+1}</h3>\n\n" + page.get("markdown", ""))
                     else:
                         full_markdown_list.append(json.dumps(j_content, ensure_ascii=False, indent=2))
 
-                # Xử lý Markdown đơn lẻ
                 elif file_extension == "md":
                     full_markdown_list.append(file_bytes.decode("utf-8", errors="ignore"))
 
-                # Gộp ảnh rời bổ sung từ giao diện
-                if extra_image_files:
-                    for img_item in extra_image_files:
-                        images_dict[img_item.name] = img_item.getvalue()
-
                 full_markdown = "".join(full_markdown_list)
+                if not full_markdown.strip():
+                    full_markdown = "Không tìm thấy nội dung văn bản."
 
-                if normalization_option:
-                    full_markdown = re.sub(r'\n{3,}', '\n\n', full_markdown)
-                    full_markdown = full_markdown.replace("-\n", "")
-
-                st.session_state.mistral_json_records = json_records
                 st.session_state.mistral_preview_markdown = full_markdown
                 st.session_state.active_images_dict = images_dict
                 st.session_state.active_file_name = base_name_off
 
-                # Biên dịch ra file Word
-                compile_markdown_to_word(full_markdown, images_dict)
-                st.success(f"🎉 Xử lý thành công! Đã bóc tách {len(images_dict)} ảnh và tạo xong file Word!")
+                # Nếu bấm nút chuẩn hóa ZIP thô thành ZIP sạch
+                if normalize_zip_btn:
+                    zip_buffer = io.BytesIO()
+                    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as clean_zip:
+                        clean_zip.writestr("output.md", full_markdown)
+                        for img_name, img_bytes in images_dict.items():
+                            clean_zip.writestr(f"images/{img_name}", img_bytes)
+                    
+                    st.success(f"✅ Đã chuẩn hóa xong! Tìm thấy {len(images_dict)} ảnh. Bạn có thể tải file ZIP sạch bên dưới.")
+                    st.download_button(
+                        label="📦 Tải xuống ZIP đã chuẩn hóa sạch sẽ",
+                        data=zip_buffer.getvalue(),
+                        file_name=f"{base_name_off}_Normalized.zip",
+                        mime="application/zip",
+                        type="primary"
+                    )
+                
+                # Nếu bấm nút dựng file Word
+                if build_word_btn:
+                    compile_markdown_to_word(full_markdown, images_dict)
+                    st.success(f"🎉 Đã bóc tách {len(images_dict)} ảnh và dựng xong file Word thành công!")
             except Exception as e:
-                log_error(f"Lỗi xử lý file offline: {str(e)}")
-                st.error(f"Lỗi khi đọc file cấu trúc: {e}")
+                log_error(f"Lỗi chuẩn hóa file offline: {str(e)}")
+                st.error(f"Lỗi xử lý: {e}")
 
 # ==========================================
-# KHUNG XEM TRƯỚC VÀ CÁC TÙY CHỌN TẢI XUỐNG DÙNG CHUNG
+# KHUNG XEM TRƯỚC VÀ TẢI XUỐNG DÙNG CHUNG
 # ==========================================
 if st.session_state.mistral_preview_markdown:
     st.divider()
@@ -457,7 +395,7 @@ if st.session_state.mistral_preview_markdown:
     with col_dl3:
         if st.session_state.get("mistral_raw_zip_bytes"):
             st.download_button(
-                label="📦 Tải file ZIP thô (JSON + MD + Ảnh)",
+                label="📦 Tải file ZIP thô",
                 data=st.session_state.mistral_raw_zip_bytes,
                 file_name=f"{current_file_name}_Raw.zip",
                 mime="application/zip",
@@ -483,7 +421,6 @@ if st.session_state.mistral_preview_markdown:
     processed_html = re.sub(r'!\[(.*?)\]\((.*?)\)', replace_img_smart_html, raw_md)
     escaped_markdown_json = json.dumps(processed_html)
 
-    # Component giao diện xem trước kèm nút Copy dán Word trực tiếp
     mistral_component_html = f"""
     <!DOCTYPE html>
     <html>
@@ -556,4 +493,3 @@ if st.session_state.mistral_preview_markdown:
     </html>
     """
     components.html(mistral_component_html, height=780, scrolling=False)
-]
