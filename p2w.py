@@ -242,11 +242,11 @@ with tab_online:
                     st.error(f"Lỗi khi xử lý: {e}")
 
 # ==========================================
-# TAB 2: XỬ LÝ OFFLINE (AN TOÀN KHI KHÔNG CÓ ẢNH UPLOAD)
+# TAB 2: XỬ LÝ OFFLINE (TỐI ƯU SIÊU TỐC CHO CẢ FILE JSON HOẶC MARKDOWN ĐƠN LẺ KHÔNG CẦN ẢNH)
 # ==========================================
 with tab_offline:
-    st.subheader("📁 Xử lý Offline từ ZIP, JSON hoặc Markdown đơn kèm Ảnh")
-    st.markdown("💡 *Tải lên file ZIP nguồn, hoặc file JSON/Markdown đơn lẻ kết hợp với việc tải lên các file ảnh có tên tương ứng (nếu cần).*")
+    st.subheader("📁 Xử lý Offline siêu tốc từ ZIP, JSON hoặc Markdown")
+    st.markdown("💡 *Hỗ trợ xử lý nhanh file JSON hoặc Markdown đơn lẻ (hoặc file ZIP). Không bắt buộc phải có file ảnh.*")
     
     offline_file = st.file_uploader(
         "Chọn file cấu trúc chính (ZIP, JSON hoặc Markdown)", 
@@ -255,7 +255,7 @@ with tab_offline:
     )
     
     offline_images = st.file_uploader(
-        "🖼️ Tải lên hình ảnh liên quan (dùng cho JSON / Markdown đơn lẻ - tùy chọn)",
+        "🖼️ Tải kèm hình ảnh (tùy chọn - chỉ dùng nếu file JSON/MD gọi tên ảnh)",
         type=["png", "jpg", "jpeg", "webp"],
         accept_multiple_files=True,
         key="offline_images_upload"
@@ -275,7 +275,7 @@ with tab_offline:
             full_markdown_list = []
             images_dict = {}
 
-            # Nạp các file ảnh được tải lên riêng lẻ (nếu có) một cách an toàn
+            # Nạp ảnh đính kèm bổ sung (nếu người dùng có tải lên)
             if offline_images:
                 for img_file in offline_images:
                     images_dict[img_file.name] = img_file.getvalue()
@@ -312,15 +312,23 @@ with tab_offline:
                                             for item in j_content:
                                                 if isinstance(item, dict) and "markdown" in item:
                                                     full_markdown_list.append(item["markdown"])
+                                        else:
+                                            full_markdown_list.append(json.dumps(j_content, ensure_ascii=False, indent=2))
                                     except:
                                         pass
 
                 elif file_extension == "json":
-                    j_content = json.loads(file_bytes.decode("utf-8"))
-                    if isinstance(j_content, dict) and "markdown" in j_content:
-                        full_markdown_list.append(j_content["markdown"])
-                    else:
-                        full_markdown_list.append(json.dumps(j_content, ensure_ascii=False, indent=2))
+                    try:
+                        j_content = json.loads(file_bytes.decode("utf-8"))
+                        if isinstance(j_content, dict) and "pages" in j_content:
+                            for p_idx, page in enumerate(j_content["pages"]):
+                                full_markdown_list.append(f"\n\n<h3>Trang {p_idx+1}</h3>\n\n" + page.get("markdown", ""))
+                        elif isinstance(j_content, dict) and "markdown" in j_content:
+                            full_markdown_list.append(j_content["markdown"])
+                        else:
+                            full_markdown_list.append(json.dumps(j_content, ensure_ascii=False, indent=2))
+                    except Exception as e:
+                        full_markdown_list.append(file_bytes.decode("utf-8", errors="ignore"))
 
                 elif file_extension in ["md", "markdown"]:
                     full_markdown_list.append(file_bytes.decode("utf-8", errors="ignore"))
@@ -334,7 +342,7 @@ with tab_offline:
                 st.session_state.active_file_name = base_name_off
 
                 compile_markdown_to_word(full_markdown, images_dict)
-                st.success(f"🎉 Đã bóc tách {len(images_dict)} ảnh và dựng xong file Word thành công!")
+                st.success(f"🎉 Đã xử lý xong văn bản và dựng file Word thành công!")
             except Exception as e:
                 log_error(f"Lỗi xử lý file offline: {str(e)}")
                 st.error(f"Lỗi xử lý: {e}")
