@@ -4,10 +4,8 @@ import json
 import os
 import re
 import zipfile
-import time
 import tempfile
 import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from bs4 import BeautifulSoup
 import requests
 import streamlit as st
@@ -17,7 +15,7 @@ import pypandoc
 # --- CẤU HÌNH GHI FILE LOG ---
 LOG_DIR = "logs"
 os.makedirs(LOG_DIR, exist_ok=True)
-LOG_FILE = os.path.join(LOG_DIR, "app.log")
+LOG_FILE = os.path.join(LOG_DIR, "mistral_app.log")
 
 logging.basicConfig(
     filename=LOG_FILE,
@@ -32,14 +30,6 @@ def log_info(msg):
 def log_error(msg):
     logging.error(msg)
 
-# Import thư viện google-genai
-try:
-    from google import genai
-    from google.genai import types
-    GEMINI_AVAILABLE = True
-except ImportError:
-    GEMINI_AVAILABLE = False
-
 # Import thư viện mistralai SDK
 try:
     from mistralai.client import Mistral
@@ -47,318 +37,452 @@ try:
 except ImportError:
     MISTRAL_AVAILABLE = False
 
-# --- CẤU HÌNH LƯU KEY RA FILE TRÊN SERVER ---
-CONFIG_FILE = "p2w_config_keys.json"
-MISTRAL_KEY_FILE = "api_key_Mistral.txt"
-
-def load_saved_config():
-    if os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except:
-            pass
-    return {}
-
-def load_mistral_keys_from_file():
-    if os.path.exists(MISTRAL_KEY_FILE):
-        try:
-            with open(MISTRAL_KEY_FILE, "r", encoding="utf-8") as f:
-                return f.read()
-        except:
-            pass
-    return "Asht2uDLjH8WTWnU06dBWdPbpcVQrbt5"
-
-def save_config(docling_key, mineru_key, gemini_key):
-    config_data = {
-        "docling_key": docling_key,
-        "mineru_key": mineru_key,
-        "gemini_key": gemini_key
-    }
-    try:
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            json.dump(config_data, f, ensure_ascii=False, indent=4)
-    except Exception as e:
-        log_error(f"Lỗi khi lưu config: {e}")
-
-def save_mistral_keys_to_file(keys_text):
-    try:
-        with open(MISTRAL_KEY_FILE, "w", encoding="utf-8") as f:
-            f.write(keys_text)
-    except Exception as e:
-        log_error(f"Lỗi khi lưu file api_key_Mistral.txt: {e}")
-
-saved_config = load_saved_config()
-
-DEFAULT_DOCLING_KEY = saved_config.get("docling_key", "")
-DEFAULT_MINERU_KEY = saved_config.get("mineru_key", "sk-IDb81Oj2W6pHrODooHN0xtKTxEXNzipsnZP6OxAqAl65Kz9O")
-DEFAULT_GEMINI_KEY = saved_config.get("gemini_key", "AQ.Ab8RN6IiVh_ufztKik5rSMrl39c-U6_L6v5oy_Qru1-YNUBdRg")
-DEFAULT_MISTRAL_KEYS_RAW = load_mistral_keys_from_file()
-
 # --- CẤU HÌNH GIAO DIỆN ---
-st.set_page_config(page_title="p2w.py - Multi-AI Concurrent & Rotation Suite", page_icon="⚡", layout="wide")
-MINERU_BASE_URL = "https://mineru.net"
-DOCLING_BASE_URL = "https://api.aws-c1.dcls.saas.ibm.com/20260811-1219-1052-8050-3cf005cc005c"
+st.set_page_config(page_title="Mistral OCR & Offline Universal Processor", page_icon="🌪️", layout="wide")
 
-# --- KHỞI TẠO SESSION STATE ĐẦY ĐỦ AN TOÀN ---
-if "mistral_key_editable" not in st.session_state: st.session_state.mistral_key_editable = False
-if "docling_key_editable" not in st.session_state: st.session_state.docling_key_editable = False
-if "mineru_key_editable" not in st.session_state: st.session_state.mineru_key_editable = False
-if "gemini_key_editable" not in st.session_state: st.session_state.gemini_key_editable = False
+# --- HÀM ĐỌC / LƯU DANH SÁCH API KEY TỪ FILE Mistral_api_key.txt ---
+KEY_FILE = "Mistral_api_key.txt"
 
-if "saved_mistral_keys_raw" not in st.session_state: st.session_state.saved_mistral_keys_raw = DEFAULT_MISTRAL_KEYS_RAW
-if "saved_docling_key" not in st.session_state: st.session_state.saved_docling_key = DEFAULT_DOCLING_KEY
-if "saved_mineru_key" not in st.session_state: st.session_state.saved_mineru_key = DEFAULT_MINERU_KEY
-if "saved_gemini_key" not in st.session_state: st.session_state.saved_gemini_key = DEFAULT_GEMINI_KEY
+def load_api_keys_from_file():
+    if os.path.exists(KEY_FILE):
+        try:
+            with open(KEY_FILE, "r", encoding="utf-8") as f:
+                keys = [line.strip() for line in f if line.strip() and not line.strip().startswith("#")]
+                if keys:
+                    return keys
+        except Exception as e:
+            log_error(f"Lỗi đọc file {KEY_FILE}: {e}")
+    return ["Asht2uDLjH8WTWnU06dBWdPbpcVQrbt5"] # Key mặc định dự phòng
 
-if "ai_results" not in st.session_state:
-    st.session_state.ai_results = {
-        "Mistral": {"json": None, "md": "", "imgs": {}, "name": "Document"},
-        "Docling": {"json": None, "md": "", "imgs": {}, "name": "Document"},
-        "MinerU": {"json": None, "md": "", "imgs": {}, "name": "Document"},
-        "Gemini Pro": {"json": None, "md": "", "imgs": {}, "name": "Document"}
-    }
+def save_api_keys_to_file(keys_list):
+    try:
+        with open(KEY_FILE, "w", encoding="utf-8") as f:
+            f.write("\n".join(keys_list))
+    except Exception as e:
+        log_error(f"Lỗi ghi file {KEY_FILE}: {e}")
 
+# --- KHỞI TẠO SESSION STATE ---
+if "mistral_key_editable" not in st.session_state:
+    st.session_state.mistral_key_editable = False
 
-# --- CÁC HÀM LÀM SẠCH LATEX & PREVIEW THÔNG MINH ---
-def clean_markdown_for_preview(md_text):
-    if not md_text:
-        return ""
-    # 1. Tránh lỗi ký tự % làm hỏng công thức
-    cleaned = re.sub(r'(\d+)%', r'\1\\%', md_text)
-    
-    # 2. Xử lý các biểu thức bị tách rời dấu $ do lỗi OCR (ví dụ: \frac{1}{\cos^2 \alpha}$ \left$ ...)
-    cleaned = re.sub(r'\$\s*\$\s*', '', cleaned)
-    
-    # 3. Tự động bọc các cụm lệnh toán học đơn lẻ chưa được đóng mở đúng dấu $
-    cleaned = re.sub(r'(?<!\$)\\frac\{[^}]+\}\{[^}]+\}', r'$\g<0>$', cleaned)
-    cleaned = re.sub(r'(?<!\$)\\(?:mathbb|alpha|beta|gamma|delta|pi|theta|sigma|omega|sum|int|in|neq|le|ge|cdot|pm)\b', r'$\g<0>$', cleaned)
+available_keys = load_api_keys_from_file()
+if "selected_mistral_key" not in st.session_state:
+    st.session_state.selected_mistral_key = available_keys[0]
 
-    # 4. Chuẩn hóa hệ phương trình cases
-    cleaned = re.sub(r'\\begin\{cases\}', r'$$\\begin{cases}', cleaned)
-    cleaned = re.sub(r'\\end\{cases\}', r'\\end{cases}$$', cleaned)
-    
-    return cleaned
+if "mistral_preview_markdown" not in st.session_state:
+    st.session_state.mistral_preview_markdown = ""
+if "mistral_docx_bytes" not in st.session_state:
+    st.session_state.mistral_docx_bytes = None
+if "mistral_raw_zip_bytes" not in st.session_state:
+    st.session_state.mistral_raw_zip_bytes = None
+if "active_images_dict" not in st.session_state:
+    st.session_state.active_images_dict = {}
+if "active_file_name" not in st.session_state:
+    st.session_state.active_file_name = "Document"
+if "mistral_json_records" not in st.session_state:
+    st.session_state.mistral_json_records = []
 
-def clean_and_wrap_latex(latex_str):
-    if not latex_str: return ""
-    clean_str = latex_str.strip()
-    if clean_str.startswith("$") and clean_str.endswith("$"):
-        clean_str = clean_str[1:-1].strip()
-    return f"${clean_str}$"
+# --- HÀM XỬ LÝ PHỤ TRỢ ---
+def cleanup_old_temp_files():
+    root_dir = "."
+    for f_name in os.listdir(root_dir):
+        if f_name.lower().endswith((".jpeg", ".jpg", ".png", ".docx", ".zip")) or f_name == "temp_input.md":
+            try:
+                os.remove(os.path.join(root_dir, f_name))
+            except:
+                pass
 
-def extract_zip_and_get_data(zip_bytes):
-    images_dict = {}
-    json_data = {}
-    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
-        for filename in z.namelist():
-            if "images/" in filename and not filename.endswith("/"):
-                images_dict[os.path.basename(filename)] = z.read(filename)
-            elif (filename.endswith("layout.json") or filename.endswith(".json")) and not filename.startswith("__MACOSX"):
-                try:
-                    json_data = json.loads(z.read(filename).decode("utf-8"))
-                except Exception as e:
-                    log_error(f"Lỗi đọc JSON từ ZIP: {e}")
-    return json_data, images_dict
+def extract_images_from_json_obj(j_obj, images_dict):
+    """Hàm phụ trợ bóc tách ảnh base64 trực tiếp nằm trong cấu trúc JSON OCR (như 123_ocr_raw.json)"""
+    def search_and_extract(data):
+        if isinstance(data, dict):
+            # Nếu có mảng 'images' chuẩn dạng OCR
+            if "images" in data and isinstance(data["images"], list):
+                for img_item in data["images"]:
+                    if isinstance(img_item, dict):
+                        img_id = img_item.get("id") or img_item.get("name")
+                        b64_str = img_item.get("image_base64") or img_item.get("base64") or img_item.get("data")
+                        if img_id and b64_str:
+                            if "," in b64_str:
+                                b64_str = b64_str.split(",")[1]
+                            try:
+                                images_dict[img_id] = base64.b64decode(b64_str)
+                            except Exception as e:
+                                log_error(f"Lỗi giải mã base64 ảnh {img_id}: {e}")
+            for v in data.values():
+                search_and_extract(v)
+        elif isinstance(data, list):
+            for item in data:
+                search_and_extract(item)
 
-def generate_pandoc_docx(data, images_dict):
-    md_text = ""
-    if isinstance(data, dict):
-        md_lines = []
-        pages = data.get("pdf_info", [])
-        for page in pages:
-            if not isinstance(page, dict): continue
-            for block in page.get("para_blocks", page.get("blocks", [])):
-                if not isinstance(block, dict): continue
-                b_type = block.get("type")
-                if b_type in ["text", "title"]:
-                    p_text = ""
-                    for line in block.get("lines", []):
-                        for span in line.get("spans", []):
-                            content = span.get("content", span.get("text", ""))
-                            if span.get("type") == "inline_equation":
-                                p_text += f" {clean_and_wrap_latex(content)} "
-                            else:
-                                p_text += content
-                    if p_text.strip():
-                        md_lines.append(p_text.strip() + "\n\n")
-        md_text = "".join(md_lines)
-    else:
-        md_text = str(data)
+    search_and_extract(j_obj)
 
-    md_text = clean_markdown_for_preview(md_text)
+def compile_markdown_to_word(full_markdown, images_dict):
+    """Hàm chuyển đổi Markdown + Ảnh sang file Word (.docx) và đóng gói ZIP thô chuẩn xác"""
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+        zip_file.writestr("output.md", full_markdown)
+        for img_name, img_bytes in images_dict.items():
+            zip_file.writestr(f"images/{img_name}", img_bytes)
+            zip_file.writestr(f"{img_name}", img_bytes) # Lưu cả 2 vị trí trong ZIP
+    st.session_state.mistral_raw_zip_bytes = zip_buffer.getvalue()
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         temp_md_path = os.path.join(tmp_dir, "temp_input.md")
-        with open(temp_md_path, "w", encoding="utf-8") as f:
-            f.write(md_text)
+        
+        # Tạo thư mục images/ trong thư mục tạm
+        img_sub_dir = os.path.join(tmp_dir, "images")
+        os.makedirs(img_sub_dir, exist_ok=True)
+        
+        # Ghi file ảnh ra cả 2 nơi (ở root tạm và ở subfolder images/)
         for img_name, img_bytes in images_dict.items():
-            with open(os.path.join(tmp_dir, img_name), "wb") as img_f:
-                img_f.write(img_bytes)
+            clean_name = os.path.basename(img_name)
+            with open(os.path.join(tmp_dir, clean_name), "wb") as f_root:
+                f_root.write(img_bytes)
+            with open(os.path.join(img_sub_dir, clean_name), "wb") as f_sub:
+                f_sub.write(img_bytes)
+
+        with open(temp_md_path, "w", encoding="utf-8") as f:
+            f.write(full_markdown)
+                
         original_dir = os.getcwd()
         os.chdir(tmp_dir)
+        
         try:
-            output_docx = "Output_Native.docx"
-            pypandoc.convert_file("temp_input.md", 'docx', outputfile=output_docx, extra_args=['--standalone', '--extract-media=.'])
+            output_docx = "Output_Document.docx"
+            # Cấu hình Pandoc tìm kiếm tài nguyên ảnh ở cả thư mục hiện tại (.) lẫn thư mục images/
+            pypandoc.convert_file(
+                "temp_input.md", 
+                'docx', 
+                outputfile=output_docx, 
+                extra_args=['--standalone', '--resource-path=.:images']
+            )
             with open(output_docx, "rb") as f:
-                return f.read()
+                docx_bytes = f.read()
+            st.session_state.mistral_docx_bytes = docx_bytes
         except Exception as e:
-            log_error(f"Lỗi tạo Word Pandoc: {e}")
-            return None
+            log_error(f"Lỗi khi pypandoc biên dịch ra docx: {e}")
         finally:
             os.chdir(original_dir)
 
+# --- GIAO DIỆN CHÍNH (2 TABS) ---
+st.title("🌪️ Mistral OCR & Offline Universal Processor")
 
-# --- XỬ LÝ MISTRAL VỚI CƠ CHẾ XOAY VÒNG KEY TỪ api_key_Mistral.txt ---
-def process_with_mistral_with_rotation(file_bytes, file_name, file_type, raw_keys_str):
-    if not MISTRAL_AVAILABLE:
-        raise Exception("Chưa cài đặt mistralai SDK.")
+tab_online, tab_offline = st.tabs(["🚀 Mistral OCR (Online)", "📁 Xử lý Offline (ZIP, JSON, MD + Ảnh)"])
+
+# ==========================================
+# TAB 1: MISTRAL OCR ONLINE
+# ==========================================
+with tab_online:
+    st.subheader("1. Cấu hình API Key Mistral")
+
+    col_link1, col_link2 = st.columns([3, 1])
+    with col_link1:
+        st.markdown("💡 *Chọn key từ danh sách bên dưới hoặc chỉnh sửa/lưu trực tiếp vào file `Mistral_api_key.txt`.*")
+    with col_link2:
+        st.markdown("[🔗 Get API Key](https://console.mistral.ai/)", unsafe_allow_html=True)
+
+    current_keys = load_api_keys_from_file()
+    selected_key_from_list = st.selectbox(
+        "Chọn Mistral API Key từ danh sách:",
+        options=current_keys,
+        index=current_keys.index(st.session_state.selected_mistral_key) if st.session_state.selected_mistral_key in current_keys else 0,
+        disabled=st.session_state.mistral_key_editable
+    )
+    st.session_state.selected_mistral_key = selected_key_from_list
+
+    new_key_input = st.text_input(
+        "Chỉnh sửa hoặc nhập API Key mới:",
+        value=st.session_state.selected_mistral_key,
+        type="password",
+        disabled=not st.session_state.mistral_key_editable
+    )
+
+    col_b1, col_b2 = st.columns(2)
+    with col_b1:
+        if st.button("✏️ Đổi / Bật sửa Key"):
+            st.session_state.mistral_key_editable = not st.session_state.mistral_key_editable
+            st.rerun()
+    with col_b2:
+        if st.session_state.mistral_key_editable and st.button("💾 Lưu Key vào danh sách"):
+            cleaned_key = new_key_input.strip()
+            if cleaned_key and cleaned_key not in current_keys:
+                current_keys.append(cleaned_key)
+                save_api_keys_to_file(current_keys)
+            st.session_state.selected_mistral_key = cleaned_key
+            st.session_state.mistral_key_editable = False
+            st.success("Đã lưu API Key thành công!")
+            log_info("Đã cập nhật Mistral API Key mới.")
+            st.rerun()
+
+    st.divider()
+
+    st.subheader("2. Tải lên tài liệu (PDF hoặc Ảnh)")
+    mistral_file = st.file_uploader(
+        "Chọn file PDF hoặc hình ảnh (PNG, JPG, JPEG) để xử lý OCR", 
+        type=["pdf", "png", "jpg", "jpeg"], 
+        key="mistral_upload"
+    )
+
+    if st.button("🚀 Gửi server Mistral phân tích xử lý"):
+        active_m_key = st.session_state.selected_mistral_key.strip()
+        if not mistral_file:
+            st.warning("Vui lòng chọn file!")
+        elif not active_m_key:
+            st.error("Vui lòng nhập hoặc chọn Mistral API Key!")
+        elif not MISTRAL_AVAILABLE:
+            st.error("Chưa cài đặt thư viện `mistralai`.")
+        else:
+            cleanup_old_temp_files()
+            original_full_name = mistral_file.name
+            base_name_only = original_full_name.rsplit('.', 1)[0]
+            log_info(f"Bắt đầu xử lý Mistral OCR cho file: {original_full_name}")
+
+            with st.spinner("Đang gửi file lên Mistral OCR API và gom dữ liệu JSON/Markdown..."):
+                try:
+                    client = Mistral(api_key=active_m_key)
+                    file_bytes = mistral_file.getvalue()
+                    base64_file = base64.b64encode(file_bytes).decode('utf-8')
+
+                    file_ext = original_full_name.split('.')[-1].lower()
+                    if file_ext == 'pdf':
+                        doc_payload = {"type": "document_url", "document_url": f"data:application/pdf;base64,{base64_file}"}
+                    else:
+                        mime_map = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg"}
+                        mime_type = mime_map.get(file_ext, "image/jpeg")
+                        doc_payload = {"type": "image_url", "image_url": f"data:{mime_type};base64,{base64_file}"}
+
+                    ocr_response = client.ocr.process(
+                        document=doc_payload,
+                        model="mistral-ocr-latest",
+                        include_image_base64=True,
+                        include_blocks=True
+                    )
+                    
+                    full_markdown = ""
+                    images_dict = {}
+                    json_records = []
+                    
+                    if hasattr(ocr_response, "pages"):
+                        for idx, page in enumerate(ocr_response.pages):
+                            page_md = page.markdown if hasattr(page, "markdown") else ""
+                            page_md = re.sub(r'!\[(.*?)\]\([^)]*?(img[_-]\d+\.(?:jpeg|jpg|png))\)', r'![\1](\2)', page_md)
+                            page_md_safe = re.sub(r'^\s*---\s*$', '<hr/>', page_md, flags=re.MULTILINE)
+                            
+                            full_markdown += f"\n\n<hr/>\n<h3>Trang {idx+1}</h3>\n\n" + page_md_safe
+                            
+                            page_json_data = {
+                                "page_index": idx + 1,
+                                "markdown": page_md,
+                                "images_count": len(page.images) if hasattr(page, "images") and page.images else 0
+                            }
+                            json_records.append(page_json_data)
+                            
+                            if hasattr(page, "images") and page.images:
+                                for img in page.images:
+                                    if hasattr(img, "id") and hasattr(img, "image_base64") and img.image_base64:
+                                        img_id = img.id
+                                        img_b64 = img.image_base64
+                                        if "," in img_b64: img_b64 = img_b64.split(",")[1]
+                                        try:
+                                            img_data_decoded = base64.b64decode(img_b64)
+                                            img_filename = img_id if img_id.lower().endswith((".jpeg", ".jpg", ".png")) else f"{img_id}.jpeg"
+                                            images_dict[img_filename] = img_data_decoded
+                                        except: 
+                                            pass
+
+                    st.session_state.mistral_json_records = json_records
+                    st.session_state.mistral_preview_markdown = full_markdown
+                    st.session_state.active_images_dict = images_dict
+                    st.session_state.active_file_name = base_name_only
+
+                    compile_markdown_to_word(full_markdown, images_dict)
+                    log_info("Xử lý Mistral OCR thành công.")
+                    st.success("🎉 Phân tích server Mistral OCR thành công!")
+                except Exception as e:
+                    log_error(f"Lỗi phân tích Mistral OCR: {str(e)}")
+                    st.error(f"Lỗi khi xử lý: {e}")
+
+# ==========================================
+# TAB 2: XỬ LÝ OFFLINE (ZIP, JSON, MD + ẢNH)
+# ==========================================
+with tab_offline:
+    st.subheader("📁 Nạp và chuẩn hóa file Offline kết hợp thư mục ảnh bổ sung")
+    st.markdown("💡 *Upload file cấu trúc (ZIP, JSON, Markdown) và chọn thêm các file ảnh liên quan. Hệ thống sẽ tự bóc tách ảnh base64 từ JSON và nhúng đầy đủ vào Word.*")
     
-    key_list = [k.strip() for k in re.split(r'[,\n]', raw_keys_str) if k.strip()]
-    if not key_list:
-        raise Exception("Không tìm thấy Mistral API Key hợp lệ.")
+    offline_file = st.file_uploader(
+        "Chọn file cấu trúc chính (ZIP, JSON hoặc Markdown)", 
+        type=["zip", "json", "md"], 
+        key="offline_upload_tab"
+    )
+    
+    extra_image_files = st.file_uploader(
+        "Chọn các file ảnh bổ sung rời (PNG, JPG, JPEG - tùy chọn)", 
+        type=["png", "jpg", "jpeg"], 
+        accept_multiple_files=True, 
+        key="offline_extra_imgs"
+    )
+    
+    normalization_option = st.checkbox("✨ Kích hoạt cơ chế làm sạch & chuẩn hóa định dạng văn bản", value=True, key="off_norm")
 
-    last_error = None
-    for idx, api_key in enumerate(key_list):
-        try:
-            log_info(f"Đang thử xử lý Mistral OCR với Key số {idx + 1}...")
-            client = Mistral(api_key=api_key)
-            base64_file = base64.b64encode(file_bytes).decode('utf-8')
-            
-            ocr_response = client.ocr.process(
-                document={"type": "document_url", "document_url": f"data:{file_type};base64,{base64_file}"},
-                model="mistral-ocr-latest",
-                include_image_base64=True,
-                include_blocks=True
-            )
-            
+    if st.button("⚙️ Xử lý, Nhúng ảnh & Dựng file Word Offline"):
+        if not offline_file:
+            st.warning("Vui lòng tải lên file dữ liệu cấu trúc chính!")
+        else:
+            cleanup_old_temp_files()
+            file_name_full = offline_file.name
+            base_name_off = file_name_full.rsplit('.', 1)[0]
+            file_extension = file_name_full.split('.')[-1].lower()
+
             full_markdown = ""
             images_dict = {}
-            if hasattr(ocr_response, "pages"):
-                for p_idx, page in enumerate(ocr_response.pages):
-                    page_md = page.markdown if hasattr(page, "markdown") else ""
-                    full_markdown += f"\n\n<hr/>\n<h3>Trang {p_idx+1} (Mistral OCR)</h3>\n\n" + page_md
-                    if hasattr(page, "images") and page.images:
-                        for img in page.images:
-                            if hasattr(img, "id") and hasattr(img, "image_base64") and img.image_base64:
-                                img_id = img.id
-                                img_b64 = img.image_base64
-                                if "," in img_b64: img_b64 = img_b64.split(",")[1]
+            json_records = []
+
+            try:
+                file_bytes = offline_file.getvalue()
+                
+                # 1. Nạp và bóc tách dữ liệu từ file ZIP
+                if file_extension == "zip":
+                    with zipfile.ZipFile(io.BytesIO(file_bytes)) as z:
+                        for filename in z.namelist():
+                            if ("images/" in filename or filename.lower().endswith((".png", ".jpg", ".jpeg"))) and not filename.endswith("/"):
+                                img_name = os.path.basename(filename)
+                                images_dict[img_name] = z.read(filename)
+                            elif filename.endswith(".json") and not filename.startswith("__MACOSX"):
                                 try:
-                                    images_dict[img_id if img_id.lower().endswith((".jpeg", ".jpg", ".png")) else f"{img_id}.jpeg"] = base64.b64decode(img_b64)
-                                except: pass
-            
-            log_info(f"Mistral OCR thành công với Key số {idx + 1}")
-            return None, clean_markdown_for_preview(full_markdown), images_dict
-            
-        except Exception as e:
-            last_error = e
-            log_error(f"Key số {idx + 1} lỗi: {str(e)}. Đang chuyển sang key tiếp theo...")
-            continue
-            
-    raise Exception(f"Tất cả các Mistral Key đều thất bại. Lỗi cuối: {str(last_error)}")
+                                    j_content = json.loads(z.read(filename).decode("utf-8"))
+                                    json_records.append({"filename": filename, "data": j_content})
+                                    
+                                    # Bóc tách ảnh base64 từ bên trong JSON nếu có
+                                    extract_images_from_json_obj(j_content, images_dict)
+                                    
+                                    if "pages" in j_content:
+                                        for p_idx, page in enumerate(j_content["pages"]):
+                                            p_md = page.get("markdown", "")
+                                            full_markdown += f"\n\n<h3>Trang {p_idx+1}</h3>\n\n" + p_md
+                                    elif "ketQuaOcr" in j_content and "pages" in j_content["ketQuaOcr"]:
+                                        for p_obj in j_content["ketQuaOcr"]["pages"]:
+                                            p_idx = p_obj.get("index", 0)
+                                            p_md = p_obj.get("markdown", "")
+                                            full_markdown += f"\n\n<h3>Trang {p_idx+1}</h3>\n\n" + p_md
+                                    elif "pdf_info" in j_content:
+                                        full_markdown += f"\n\n" + json.dumps(j_content, ensure_ascii=False, indent=2)
+                                    else:
+                                        full_markdown += f"\n\n<!-- File: {filename} -->\n" + json.dumps(j_content, ensure_ascii=False, indent=2)
+                                except Exception as e:
+                                    log_error(f"Lỗi đọc file json trong zip: {e}")
+                            elif filename.endswith(".md") and not filename.startswith("__MACOSX"):
+                                md_content = z.read(filename).decode("utf-8")
+                                full_markdown += f"\n\n<!-- File: {filename} -->\n" + md_content
 
-def process_with_docling(file_bytes, file_name, file_type, api_key):
-    url_convert = f"{DOCLING_BASE_URL}/v1/convert/file/async"
-    headers = {"X-Api-Key": api_key} if api_key else {}
-    files = {"files": (file_name, file_bytes, file_type)}
+                # 2. Nạp từ file JSON đơn lẻ (ví dụ 123_ocr_raw.json)
+                elif file_extension == "json":
+                    j_content = json.loads(file_bytes.decode("utf-8"))
+                    json_records.append({"filename": file_name_full, "data": j_content})
+                    
+                    # Bóc tách tất cả ảnh base64 trong JSON
+                    extract_images_from_json_obj(j_content, images_dict)
+                    
+                    if "pages" in j_content:
+                        for p_idx, page in enumerate(j_content["pages"]):
+                            p_md = page.get("markdown", "")
+                            full_markdown += f"\n\n<h3>Trang {p_idx+1}</h3>\n\n" + p_md
+                    elif "ketQuaOcr" in j_content and "pages" in j_content["ketQuaOcr"]:
+                        for p_obj in j_content["ketQuaOcr"]["pages"]:
+                            p_idx = p_obj.get("index", 0)
+                            p_md = p_obj.get("markdown", "")
+                            full_markdown += f"\n\n<h3>Trang {p_idx+1}</h3>\n\n" + p_md
+                    else:
+                        full_markdown = json.dumps(j_content, ensure_ascii=False, indent=2)
+
+                # 3. Nạp từ file Markdown đơn lẻ (.md)
+                elif file_extension == "md":
+                    full_markdown = file_bytes.decode("utf-8")
+
+                # 4. Gộp các ảnh upload rời từ giao diện
+                if extra_image_files:
+                    for img_item in extra_image_files:
+                        images_dict[img_item.name] = img_item.getvalue()
+
+                # Cơ chế chuẩn hóa (Normalization)
+                if normalization_option:
+                    full_markdown = re.sub(r'\n{3,}', '\n\n', full_markdown)
+                    full_markdown = full_markdown.replace("-\n", "")
+
+                st.session_state.mistral_json_records = json_records
+                st.session_state.mistral_preview_markdown = full_markdown
+                st.session_state.active_images_dict = images_dict
+                st.session_state.active_file_name = base_name_off
+
+                # Biên dịch ra file Word
+                compile_markdown_to_word(full_markdown, images_dict)
+                st.success(f"🎉 Nạp thành công! Đã bóc tách {len(images_dict)} ảnh và tạo file Word hoàn chỉnh!")
+            except Exception as e:
+                log_error(f"Lỗi xử lý file offline: {str(e)}")
+                st.error(f"Lỗi khi đọc file cấu trúc: {e}")
+
+# ==========================================
+# KHUNG XEM TRƯỚC VÀ CÁC TÙY CHỌN TẢI XUỐNG DÙNG CHUNG
+# ==========================================
+if st.session_state.mistral_preview_markdown:
+    st.divider()
+    current_file_name = st.session_state.get("active_file_name", "Document")
     
-    response = requests.post(url_convert, headers=headers, files=files, timeout=60)
-    if response.status_code != 200:
-        raise Exception(f"Docling Convert Init Error: {response.status_code} - {response.text}")
-        
-    res_data = response.json()
-    task_id = res_data.get("task_id") or res_data.get("id")
-    if not task_id:
-        raise Exception(f"Không nhận được task_id từ Docling: {res_data}")
+    st.subheader(f"👁️ Khung xem trước kết quả: {current_file_name}")
 
-    for _ in range(80):
-        time.sleep(5)
-        url_status = f"{DOCLING_BASE_URL}/v1/status/poll/{task_id}"
-        st_res = requests.get(url_status, headers=headers, timeout=30)
-        if st_res.status_code == 200:
-            st_data = st_res.json()
-            status = st_data.get("status") or st_data.get("state")
-            if status == "success":
-                url_result = f"{DOCLING_BASE_URL}/v1/result/{task_id}"
-                res_fetch = requests.get(url_result, headers=headers, timeout=30)
-                if res_fetch.status_code == 200:
-                    result_json = res_fetch.json()
-                    md = result_json.get("markdown", str(result_json))
-                    return None, clean_markdown_for_preview(md), {}
-            elif status == "failure" or status == "failed":
-                raise Exception("Docling conversion task failed.")
-    raise Exception("Docling polling timeout.")
-
-def process_with_mineru(file_bytes, file_name, file_type, api_key):
-    upload_url = "https://tmpfiles.org/api/v1/upload"
-    res = requests.post(upload_url, files={"file": (file_name, file_bytes, file_type)}, timeout=30)
-    if res.status_code != 200:
-        raise Exception("Không thể upload file trung gian cho MinerU.")
-    file_url = res.json().get("data", {}).get("url", "")
-    if "tmpfiles.org/" in file_url and not "tmpfiles.org/dl/" in file_url:
-        file_url = file_url.replace("tmpfiles.org/", "tmpfiles.org/dl/")
-
-    task_url = f"{MINERU_BASE_URL}/api/v4/extract/task"
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    payload = {"url": file_url, "model_version": "vlm", "is_ocr": True}
+    col_dl1, col_dl2, col_dl3 = st.columns(3)
     
-    response = requests.post(task_url, json=payload, headers=headers, timeout=30)
-    if response.status_code != 200:
-        raise Exception(f"MinerU Task Init Error: {response.text}")
-        
-    task_id = response.json().get("data", {}).get("task_id")
-    for _ in range(40):
-        time.sleep(5)
-        status_url = f"{MINERU_BASE_URL}/api/v4/extract/task/{task_id}"
-        st_res = requests.get(status_url, headers={"Authorization": f"Bearer {api_key}"}, timeout=30)
-        if st_res.status_code == 200:
-            data = st_res.json().get("data", {})
-            if data.get("state") == "done":
-                r_zip = requests.get(data.get("full_zip_url"))
-                if r_zip.status_code == 200:
-                    found_json, images_dict = extract_zip_and_get_data(r_zip.content)
-                    return found_json, "", images_dict
-            elif data.get("state") == "failed":
-                raise Exception("MinerU xử lý thất bại hoặc Token hết hạn (A0211).")
-    raise Exception("MinerU timeout.")
+    with col_dl1:
+        if st.session_state.mistral_docx_bytes:
+            st.download_button(
+                label="📥 Tải Word (Pandoc .docx)",
+                data=st.session_state.mistral_docx_bytes,
+                file_name=f"{current_file_name}_pandoc.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                use_container_width=True
+            )
+            
+    with col_dl2:
+        if st.session_state.mistral_docx_bytes:
+            st.download_button(
+                label="📥 Tải Word (Từ khung xem trước)",
+                data=st.session_state.mistral_docx_bytes,
+                file_name=f"{current_file_name}_preview.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                use_container_width=True
+            )
 
-def process_with_gemini(file_bytes, file_name, file_type, api_key, model_name):
-    if not GEMINI_AVAILABLE:
-        raise Exception("Chưa cài đặt google-genai.")
-    os.environ["GEMINI_API_KEY"] = api_key
-    client = genai.Client(api_key=api_key)
-    response = client.models.generate_content(
-        model=model_name,
-        contents=[
-            types.Part.from_bytes(data=file_bytes, mime_type=file_type),
-            "Hãy đọc tài liệu này chính xác tuyệt đối. Biểu thức toán học đặt trong cặp đô la ($...$). Trình bày Markdown sạch sẽ."
-        ]
-    )
-    return None, clean_markdown_for_preview(response.text), {}
+    with col_dl3:
+        if st.session_state.get("mistral_raw_zip_bytes"):
+            st.download_button(
+                label="📦 Tải file ZIP thô (JSON + MD + Ảnh)",
+                data=st.session_state.mistral_raw_zip_bytes,
+                file_name=f"{current_file_name}_Raw.zip",
+                mime="application/zip",
+                use_container_width=True
+            )
 
-
-# --- HÀM RENDER PREVIEW BOX ---
-def render_ai_preview_box(ai_label, json_data, markdown_text, images_dict, file_name):
-    st.subheader(f"📊 Kết quả từ: `{ai_label}`")
+    raw_md = st.session_state.mistral_preview_markdown
     
-    data_source = json_data if json_data else markdown_text
-    docx_bytes = generate_pandoc_docx(data_source, images_dict) if data_source else None
+    def replace_img_smart_html(match):
+        alt_text = match.group(1)
+        raw_path = match.group(2)
+        target_name = os.path.basename(raw_path)
+        matched_bytes = None
+        for k, v in st.session_state.active_images_dict.items():
+            if target_name in k or k in target_name:
+                matched_bytes = v
+                break
+        if matched_bytes:
+            b64_data = base64.b64encode(matched_bytes).decode('utf-8')
+            return f'<div style="text-align: center; margin: 20px 0;"><img src="data:image/jpeg;base64,{b64_data}" style="max-width: 450px; border-radius: 8px; border: 1px solid #2d3748;" alt="{alt_text}" /></div>'
+        return match.group(0)
 
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        if docx_bytes:
-            st.download_button(f"📥 Tải Word (Pandoc) [{ai_label}]", docx_bytes, f"{file_name}_{ai_label}.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", type="primary", use_container_width=True, key=f"dl_{ai_label}")
-    with col2:
-        if markdown_text or json_data:
-            md_dl = markdown_text if markdown_text else json.dumps(json_data, ensure_ascii=False, indent=2)
-            st.download_button(f"📥 Tải File (.md/.json) [{ai_label}]", md_dl, f"{file_name}_{ai_label}.txt", "text/plain", use_container_width=True, key=f"dl_md_{ai_label}")
-    with col3:
-        if json_data:
-            st.download_button(f"📥 Tải JSON [{ai_label}]", json.dumps(json_data, ensure_ascii=False, indent=2), f"{file_name}_{ai_label}.json", "application/json", use_container_width=True, key=f"dl_json_{ai_label}")
+    processed_html = re.sub(r'!\[(.*?)\]\((.*?)\)', replace_img_smart_html, raw_md)
+    escaped_markdown_json = json.dumps(processed_html)
 
-    content_to_render = markdown_text if markdown_text else json.dumps(json_data, ensure_ascii=False, indent=2)
-    preview_html = f"""
+    # Component giao diện xem trước kèm nút Copy dán Word trực tiếp
+    mistral_component_html = f"""
     <!DOCTYPE html>
     <html>
     <head>
@@ -368,258 +492,65 @@ def render_ai_preview_box(ai_label, json_data, markdown_text, images_dict, file_
         <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/contrib/auto-render.min.js"></script>
         <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
         <style>
-            body {{ font-family: Arial, sans-serif; padding: 10px; background: #fff; color: #2d3748; }}
-            .btn-action {{ padding: 8px 16px; color: white; background: #2b6cb0; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; margin-bottom: 10px; }}
-            .preview-card {{ background: #fff; padding: 20px; border-radius: 8px; border: 1px solid #cbd5e0; max-height: 450px; overflow-y: auto; line-height: 1.6; }}
+            body {{ font-family: Arial, sans-serif; padding: 10px; background-color: #ffffff; color: #2d3748; }}
+            .btn-action {{ padding: 10px 20px; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; margin-right: 10px; margin-bottom: 15px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }}
+            .btn-copy {{ background-color: #2b6cb0; }}
+            .btn-copy:hover {{ background-color: #2c5282; }}
+            #status-msg {{ margin-left: 10px; color: #2f855a; font-weight: bold; font-size: 13px; display: none; }}
+            .preview-card {{ background-color: #ffffff; padding: 30px; border-radius: 10px; border: 1px solid #cbd5e0; max-height: 600px; overflow-y: auto; line-height: 1.8; }}
+            table {{ border-collapse: collapse; width: auto; max-width: 100%; margin: 15px auto; border: 2px solid #2d3748; }}
+            th {{ border: 2px solid #2d3748; padding: 6px 10px; background-color: #edf2f7; font-weight: bold; text-align: center; }}
+            td {{ border: 2px solid #2d3748; padding: 6px 10px; vertical-align: middle; }}
         </style>
     </head>
     <body>
-        <button class="btn-action" onclick="copyContent()">📋 Sao chép nhanh [{ai_label}] (Dán Word)</button>
-        <div class="preview-card" id="box_{ai_label}"></div>
+        <div>
+            <button class="btn-action btn-copy" onclick="copyContentToClipboard()">📋 Sao chép nhanh (Dán vào Word)</button>
+            <span id="status-msg">✔ Đã sao chép!</span>
+        </div>
+        <div class="preview-card" id="content-to-copy"></div>
+
         <script>
-        document.getElementById('box_{ai_label}').innerHTML = marked.parse({json.dumps(content_to_render)});
-        setTimeout(() => {{
-            renderMathInElement(document.getElementById('box_{ai_label}'), {{
-                delimiters: [
-                    {{left: '$$', right: '$$', display: true}},
-                    {{left: '$', right: '$', display: false}},
-                    {{left: '\\\\(', right: '\\\\)', display: false}},
-                    {{left: '\\\\[', right: '\\\\]', display: true}}
-                ],
-                throwOnError: false
-            }});
-        }}, 300);
-        function copyContent() {{
+        const rawMarkdown = {escaped_markdown_json};
+        document.getElementById('content-to-copy').innerHTML = marked.parse(rawMarkdown);
+
+        function renderMath() {{
+            if (typeof renderMathInElement === 'function') {{
+                renderMathInElement(document.getElementById('content-to-copy'), {{
+                    delimiters: [
+                        {{left: '$$', right: '$$', display: true}},
+                        {{left: '$', right: '$', display: false}},
+                        {{left: '\\\\[', right: '\\\\]', display: true}},
+                        {{left: '\\\\(', right: '\\\\)', display: false}}
+                    ],
+                    throwOnError: false
+                }});
+            }}
+        }}
+
+        document.addEventListener("DOMContentLoaded", renderMath);
+        setTimeout(renderMath, 300);
+
+        function copyContentToClipboard() {{
             const range = document.createRange();
-            range.selectNode(document.getElementById('box_{ai_label}'));
+            range.selectNode(document.getElementById('content-to-copy'));
             window.getSelection().removeAllRanges();
             window.getSelection().addRange(range);
-            document.execCommand('copy');
+            try {{
+                document.execCommand('copy');
+                showStatus("Đã sao chép vào bộ nhớ tạm! Mở Word và nhấn Ctrl+V");
+            }} catch (err) {{ alert('Không thể sao chép tự động!'); }}
             window.getSelection().removeAllRanges();
-            alert("Đã sao chép nội dung [{ai_label}]! Mở Word và nhấn Ctrl+V");
+        }}
+
+        function showStatus(msg) {{
+            const status = document.getElementById('status-msg');
+            status.innerText = "✔ " + msg;
+            status.style.display = 'inline';
+            setTimeout(() => {{ status.style.display = 'none'; }}, 4000);
         }}
         </script>
     </body>
     </html>
     """
-    components.html(preview_html, height=550, scrolling=False)
-
-
-# --- GIAO DIỆN CHÍNH (2 TABS) ---
-st.title("⚡ p2w.py - Nền tảng Xử lý Đồng thời & Xoay vòng Key Đa AI")
-st.write("Hệ thống hỗ trợ chạy đồng thời/riêng lẻ qua **Mistral** (xoay vòng key từ `api_key_Mistral.txt`), **Docling**, **MinerU** và **Gemini Pro**.")
-
-tab1, tab2 = st.tabs([
-    "🚀 Tab 1: AI Pipeline (Xoay vòng Key Mistral & Điều khiển AI)", 
-    "📦 Tab 2: Quản lý & Dựng Word từ ZIP, JSON, Markdown và Ảnh"
-])
-
-# ==========================================
-# TAB 1: XỬ LÝ ĐỒNG THỜI HOẶC TỪNG AI RIÊNG LẺ
-# ==========================================
-with tab1:
-    st.subheader("🔑 Cấu hình API Keys (Hỗ trợ Đổi và Lưu an toàn)")
-    col_k1, col_k2 = st.columns(2)
-    
-    with col_k1:
-        m_keys = st.text_input(
-            "Danh sách Mistral API Keys (Đọc/Lưu từ `api_key_Mistral.txt`):", 
-            value=st.session_state.saved_mistral_keys_raw, 
-            type="password",
-            disabled=not st.session_state.mistral_key_editable
-        )
-        c1, c2 = st.columns(2)
-        with c1:
-            if st.button("Đổi Mistral Keys", key="b_ed_m"): st.session_state.mistral_key_editable = True; st.rerun()
-        with c2:
-            if st.session_state.mistral_key_editable and st.button("Lưu Mistral Keys", key="b_sv_m"):
-                st.session_state.saved_mistral_keys_raw = m_keys
-                save_mistral_keys_to_file(m_keys)
-                st.session_state.mistral_key_editable = False
-                st.success("Đã lưu danh sách Mistral Keys vào file `api_key_Mistral.txt`!")
-                st.rerun()
-
-        d_key = st.text_input("Docling API Key (X-Api-Key):", value=st.session_state.saved_docling_key, type="password", disabled=not st.session_state.docling_key_editable)
-        c3, c4 = st.columns(2)
-        with c3:
-            if st.button("Đổi Docling Key", key="b_ed_d"): st.session_state.docling_key_editable = True; st.rerun()
-        with c4:
-            if st.session_state.docling_key_editable and st.button("Lưu Docling Key", key="b_sv_d"):
-                st.session_state.saved_docling_key = d_key
-                save_config(st.session_state.saved_docling_key, st.session_state.saved_mineru_key, st.session_state.saved_gemini_key)
-                st.session_state.docling_key_editable = False
-                st.success("Đã lưu Docling Key!")
-                st.rerun()
-
-    with col_k2:
-        mi_key = st.text_input("MinerU API Key:", value=st.session_state.saved_mineru_key, type="password", disabled=not st.session_state.mineru_key_editable)
-        c5, c6 = st.columns(2)
-        with c5:
-            if st.button("Đổi MinerU Key", key="b_ed_mi"): st.session_state.mineru_key_editable = True; st.rerun()
-        with c6:
-            if st.session_state.mineru_key_editable and st.button("Lưu MinerU Key", key="b_sv_mi"):
-                st.session_state.saved_mineru_key = mi_key
-                save_config(st.session_state.saved_docling_key, st.session_state.saved_mineru_key, st.session_state.saved_gemini_key)
-                st.session_state.mineru_key_editable = False
-                st.success("Đã lưu MinerU Key!")
-                st.rerun()
-
-        g_key = st.text_input("Gemini API Key:", value=st.session_state.saved_gemini_key, type="password", disabled=not st.session_state.gemini_key_editable)
-        c7, c8 = st.columns(2)
-        with c7:
-            if st.button("Đổi Gemini Key", key="b_ed_g"): st.session_state.gemini_key_editable = True; st.rerun()
-        with c8:
-            if st.session_state.gemini_key_editable and st.button("Lưu Gemini Key", key="b_sv_g"):
-                st.session_state.saved_gemini_key = g_key
-                save_config(st.session_state.saved_docling_key, st.session_state.saved_mineru_key, st.session_state.saved_gemini_key)
-                st.session_state.gemini_key_editable = False
-                st.success("Đã lưu Gemini Key!")
-                st.rerun()
-
-    st.divider()
-    selected_gemini_model = st.selectbox("Chọn Model Gemini:", ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-1.5-flash", "gemini-1.5-pro"], index=0)
-    pipeline_file = st.file_uploader("📥 Tải file tài liệu (PDF, Ảnh) để xử lý", type=["pdf", "png", "jpg", "jpeg"], key="tab1_upload")
-
-    st.markdown("### 🎛️ Bảng điều khiển tác vụ AI (Chạy đồng thời hoặc chạy riêng lẻ từng AI)")
-    
-    col_btn_all, col_btn_m, col_btn_d, col_btn_mi, col_btn_g = st.columns(5)
-    
-    run_all = col_btn_all.button("🚀 Chạy Tất Cả (Đồng thời)", type="primary", use_container_width=True)
-    run_mistral = col_btn_m.button("🌪️ Chỉ chạy Mistral", use_container_width=True)
-    run_docling = col_btn_d.button("📄 Chỉ chạy Docling", use_container_width=True)
-    run_mineru = col_btn_mi.button("📐 Chỉ chạy MinerU", use_container_width=True)
-    run_gemini = col_btn_g.button("✨ Chỉ chạy Gemini", use_container_width=True)
-
-    if pipeline_file and (run_all or run_mistral or run_docling or run_mineru or run_gemini):
-        base_name = pipeline_file.name.rsplit(".", 1)[0]
-        f_bytes = pipeline_file.getvalue()
-        f_name = pipeline_file.name
-        f_type = pipeline_file.type
-        
-        k_mistral_raw = st.session_state.saved_mistral_keys_raw
-        k_docling = st.session_state.saved_docling_key
-        k_mineru = st.session_state.saved_mineru_key
-        k_gemini = st.session_state.saved_gemini_key
-        
-        all_tasks = {
-            "Mistral": lambda: process_with_mistral_with_rotation(f_bytes, f_name, f_type, k_mistral_raw),
-            "Docling": lambda: process_with_docling(f_bytes, f_name, f_type, k_docling),
-            "MinerU": lambda: process_with_mineru(f_bytes, f_name, f_type, k_mineru),
-            "Gemini Pro": lambda: process_with_gemini(f_bytes, f_name, f_type, k_gemini, selected_gemini_model)
-        }
-
-        if run_all:
-            selected_tasks = all_tasks
-        else:
-            selected_tasks = {}
-            if run_mistral: selected_tasks["Mistral"] = all_tasks["Mistral"]
-            if run_docling: selected_tasks["Docling"] = all_tasks["Docling"]
-            if run_mineru: selected_tasks["MinerU"] = all_tasks["MinerU"]
-            if run_gemini: selected_tasks["Gemini Pro"] = all_tasks["Gemini Pro"]
-
-        with st.spinner(f"⏳ Đang thực thi các mô hình AI đã chọn ({list(selected_tasks.keys())})..."):
-            with ThreadPoolExecutor(max_workers=len(selected_tasks)) as executor:
-                future_to_ai = {executor.submit(task_func): ai_name for ai_name, task_func in selected_tasks.items()}
-                
-                for future in as_completed(future_to_ai):
-                    ai_name = future_to_ai[future]
-                    try:
-                        json_res, md_res, img_res = future.result()
-                        st.session_state.ai_results[ai_name] = {
-                            "json": json_res,
-                            "md": md_res,
-                            "imgs": img_res,
-                            "name": base_name
-                        }
-                        log_info(f"AI {ai_name} hoàn thành thành công.")
-                    except Exception as e:
-                        err_msg = f"Lỗi xử lý: {str(e)}"
-                        log_error(f"Lỗi AI {ai_name}: {err_msg}")
-                        st.session_state.ai_results[ai_name] = {
-                            "json": None,
-                            "md": f"# Lỗi xử lý từ {ai_name}\n\n> {err_msg}",
-                            "imgs": {},
-                            "name": base_name
-                        }
-
-        st.success("🎉 Hoàn tất quá trình xử lý!")
-        st.rerun()
-    elif not pipeline_file and (run_all or run_mistral or run_docling or run_mineru or run_gemini):
-        st.warning("Vui lòng tải lên file tài liệu trước khi bấm nút chạy!")
-
-    # HIỂN THỊ 4 KHUNG PREVIEW ĐỘC LẬP
-    if any(res.get("json") or res.get("md") for res in st.session_state.ai_results.values()):
-        st.divider()
-        st.subheader("📊 Khung Preview độc lập tương ứng của các AI")
-        
-        t_m, t_d, t_mi, t_g = st.tabs(["🌪️ Mistral OCR", "📄 Docling", "📐 MinerU", "✨ Gemini Pro"])
-        
-        with t_m:
-            res = st.session_state.ai_results.get("Mistral", {})
-            render_ai_preview_box("Mistral", res.get("json"), res.get("md"), res.get("imgs", {}), res.get("name", "Document"))
-        with t_d:
-            res = st.session_state.ai_results.get("Docling", {})
-            render_ai_preview_box("Docling", res.get("json"), res.get("md"), res.get("imgs", {}), res.get("name", "Document"))
-        with t_mi:
-            res = st.session_state.ai_results.get("MinerU", {})
-            render_ai_preview_box("MinerU", res.get("json"), res.get("md"), res.get("imgs", {}), res.get("name", "Document"))
-        with t_g:
-            res = st.session_state.ai_results.get("Gemini Pro", {})
-            render_ai_preview_box("Gemini Pro", res.get("json"), res.get("md"), res.get("imgs", {}), res.get("name", "Document"))
-
-
-# ==========================================
-# TAB 2: QUẢN LÝ & DỰNG WORD TỪ ZIP, JSON, MD VÀ ẢNH
-# ==========================================
-with tab2:
-    st.subheader("📦 Quản lý file đầu vào: ZIP, JSON, Markdown và Ảnh")
-    col_u1, col_u2 = st.columns(2)
-    with col_u1:
-        package_file = st.file_uploader("📥 Tải lên gói tệp (ZIP, JSON hoặc Markdown)", type=["zip", "json", "md", "markdown"], key="tab2_pkg")
-    with col_u2:
-        image_files_tab2 = st.file_uploader("🖼️ Tải kèm các file ảnh riêng lẻ (nếu cần)", type=["png", "jpg", "jpeg"], accept_multiple_files=True, key="tab2_imgs")
-
-    if package_file is not None:
-        file_ext = package_file.name.rsplit(".", 1)[1].lower()
-        file_base = package_file.name.rsplit(".", 1)[0]
-        tab2_imgs_dict = {img.name: img.getvalue() for img in image_files_tab2} if image_files_tab2 else {}
-
-        try:
-            if file_ext == "zip":
-                found_json, zip_imgs = extract_zip_and_get_data(package_file.getvalue())
-                tab2_imgs_dict.update(zip_imgs)
-                st.session_state.ai_results["MinerU"] = {"json": found_json, "md": "", "imgs": tab2_imgs_dict, "name": file_base}
-                st.success("Đã nạp gói ZIP thành công vào hệ thống quản lý!")
-                st.rerun()
-            elif file_ext == "json":
-                json_content = json.loads(package_file.getvalue().decode("utf-8"))
-                st.session_state.ai_results["MinerU"] = {"json": json_content, "md": "", "imgs": tab2_imgs_dict, "name": file_base}
-                st.success("Đã nạp file JSON thành công!")
-                st.rerun()
-            elif file_ext in ["md", "markdown"]:
-                md_content = package_file.getvalue().decode("utf-8")
-                st.session_state.ai_results["Mistral"] = {"json": None, "md": clean_markdown_for_preview(md_content), "imgs": tab2_imgs_dict, "name": file_base}
-                st.success("Đã nạp file Markdown thành công!")
-                st.rerun()
-        except Exception as e:
-            log_error(f"Lỗi khi đọc file ở Tab 2: {e}")
-            st.error(f"Lỗi khi đọc file: {e}")
-
-    st.divider()
-    res_m = st.session_state.ai_results.get("Mistral", {})
-    res_mu = st.session_state.ai_results.get("MinerU", {})
-    if res_m.get("md"):
-        render_ai_preview_box("Workspace Mistral", None, res_m.get("md"), res_m.get("imgs", {}), res_m.get("name", "Document"))
-    if res_mu.get("json"):
-        render_ai_preview_box("Workspace MinerU", res_mu.get("json"), "", res_mu.get("imgs", {}), res_mu.get("name", "Document"))
-
-# --- XEM NHẬT KÝ HỆ THỐNG ---
-st.divider()
-with st.expander("🛠️ Xem Nhật ký hệ thống (System Logs)"):
-    if os.path.exists(LOG_FILE):
-        with open(LOG_FILE, "r", encoding="utf-8") as log_file:
-            st.text_area("Nội dung file app.log", log_file.read(), height=250)
-        if st.button("Xóa lịch sử log"):
-            open(LOG_FILE, "w", encoding="utf-8").close()
-            st.success("Đã làm sạch file log!")
-            st.rerun()
+    components.html(mistral_component_html, height=780, scrolling=False)
