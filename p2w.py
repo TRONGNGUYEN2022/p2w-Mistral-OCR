@@ -36,7 +36,7 @@ try:
 except ImportError:
     MISTRAL_AVAILABLE = False
 
-# Import thư viện google-genai chính thức mới nhất
+# Import thư viện google-genai chính thức mới nhất cho bước chuẩn hóa tiếng Việt
 try:
     from google import genai
     from google.genai import types
@@ -45,7 +45,7 @@ except ImportError:
     GEMINI_AVAILABLE = False
 
 # --- CẤU HÌNH GIAO DIỆN ---
-st.set_page_config(page_title="Universal OCR & AI Text Normalizer to Word", page_icon="🌪️", layout="wide")
+st.set_page_config(page_title="Universal OCR & AI Vietnamese Normalizer to Word", page_icon="🌪️", layout="wide")
 
 # --- HÀM ĐỌC / LƯU DANH SÁCH API KEY TỪ FILE ---
 KEY_FILE = "Mistral_api_key.txt"
@@ -156,12 +156,13 @@ def normalize_vietnamese_text_with_gemini(raw_markdown, gemini_api_key, model_na
     try:
         client = genai.Client(api_key=gemini_api_key.strip())
         system_instruction = (
-            "Bạn là chuyên gia biên tập tài liệu và xử lý OCR. Nhiệm vụ của bạn là làm sạch và chuẩn hóa nội dung Markdown:\n"
-            "1. Sửa toàn bộ lỗi chính tả tiếng Việt bị sai do OCR (mất dấu, dính chữ, sai dấu thanh).\n"
-            "2. Chuẩn hóa cấu trúc: Gộp các dòng bị ngắt cụt thành đoạn văn hoàn chỉnh, giữ đúng định dạng tiêu đề (#, ##).\n"
+            "Bạn là chuyên gia biên tập tài liệu, chuyên gia xử lý OCR và định dạng văn bản học thuật (tiếng Việt và toán học). "
+            "Nhiệm vụ của bạn là làm sạch và chuẩn hóa lại nội dung Markdown được cung cấp từ kết quả OCR thô:\n"
+            "1. Sửa toàn bộ lỗi chính tả tiếng Việt bị sai do OCR (mất dấu, dính chữ, sai dấu thanh, nhận diện sai ký tự).\n"
+            "2. Chuẩn hóa cấu trúc: Gộp các dòng bị ngắt cụt cụn lủn thành đoạn văn hoàn chỉnh, giữ đúng định dạng tiêu đề (#, ##).\n"
             "3. Chuẩn hóa công thức toán học: Mọi biểu thức toán học, ký hiệu, phân số PHẢI được bọc chuẩn trong cặp dấu đô la ($...$ cho inline hoặc $$...$$ cho block LaTeX).\n"
-            "4. QUAN TRỌNG: Giữ nguyên vẹn 100% các cú pháp hiển thị ảnh dạng Markdown (ví dụ: ![img-0.jpeg](img-0.jpeg) hoặc ![alt](images/abc.png)), không được xóa hoặc đổi tên file trong ngoặc đơn.\n"
-            "5. Chỉ trả về kết quả Markdown đã chuẩn hóa sạch sẽ, không kèm theo giải thích gì thêm."
+            "4. Giữ nguyên các cú pháp chèn ảnh Markdown (ví dụ: ![alt](path)) và cấu trúc bảng.\n"
+            "5. Chỉ trả về kết quả nội dung Markdown đã được chuẩn hóa sạch sẽ, không kèm theo giải thích gì thêm."
         )
 
         response = client.models.generate_content(
@@ -181,25 +182,10 @@ def normalize_vietnamese_text_with_gemini(raw_markdown, gemini_api_key, model_na
         return raw_markdown
 
 def compile_markdown_to_word(full_markdown, images_dict):
-    """Biên dịch Markdown + Ảnh thành file Word (.docx) và ZIP thô, tự động khớp đường dẫn ảnh cho Pandoc"""
-    
-    # Bước tự động sửa lại đường dẫn ảnh trong Markdown để khớp hoàn toàn với images_dict
-    fixed_markdown = full_markdown
-    def fix_image_path(match):
-        alt = match.group(1)
-        path = match.group(2)
-        filename = os.path.basename(path)
-        # Kiểm tra xem tên file ảnh có tồn tại trong bộ images_dict không
-        for k in images_dict.keys():
-            if filename in k or k in filename:
-                return f'![]({k})'
-        return match.group(0) # Giữ nguyên nếu không tìm thấy
-
-    fixed_markdown = re.sub(r'!\[(.*?)\]\((.*?)\)', fix_image_path, fixed_markdown)
-
+    """Biên dịch Markdown + Ảnh thành file Word (.docx) và ZIP thô"""
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-        zip_file.writestr("output.md", fixed_markdown)
+        zip_file.writestr("output.md", full_markdown)
         for img_name, img_bytes in images_dict.items():
             zip_file.writestr(f"images/{img_name}", img_bytes)
             zip_file.writestr(f"{img_name}", img_bytes)
@@ -210,7 +196,6 @@ def compile_markdown_to_word(full_markdown, images_dict):
         img_sub_dir = os.path.join(tmp_dir, "images")
         os.makedirs(img_sub_dir, exist_ok=True)
         
-        # Đưa toàn bộ ảnh vào cả root lẫn thư mục images/ để Pandoc bắt được ở mọi kiểu đường dẫn
         for img_name, img_bytes in images_dict.items():
             clean_name = os.path.basename(img_name)
             with open(os.path.join(tmp_dir, clean_name), "wb") as f_root:
@@ -219,7 +204,7 @@ def compile_markdown_to_word(full_markdown, images_dict):
                 f_sub.write(img_bytes)
 
         with open(temp_md_path, "w", encoding="utf-8") as f:
-            f.write(fixed_markdown)
+            f.write(full_markdown)
                 
         original_dir = os.getcwd()
         os.chdir(tmp_dir)
