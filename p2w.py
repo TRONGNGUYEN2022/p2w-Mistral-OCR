@@ -240,25 +240,28 @@ with tab_online:
                     st.error(f"Lỗi khi xử lý: {e}")
 
 # ==========================================
-# TAB 2: XỬ LÝ OFFLINE (NÂNG CẤP XỬ LÝ ZIP CHUẨN AN TOÀN, CHỐNG TRÀN RAM)
+# TAB 2: XỬ LÝ OFFLINE (CÓ THÊM NÚT UPLOAD IMAGES CHO FILE ĐƠN)
 # ==========================================
 with tab_offline:
-    st.subheader("📁 Chuẩn hóa cấu trúc ZIP thô & Dựng file Word")
-    st.markdown("💡 *Tải lên file ZIP thành phẩm (như file _Raw.zip), hệ thống sẽ đọc trực tiếp qua thư mục tạm thời, bóc tách toàn bộ ảnh và dựng file Word mượt mà giống hệt Tab 1.*")
+    st.subheader("📁 Xử lý Offline từ ZIP, JSON hoặc Markdown đơn kèm Ảnh")
+    st.markdown("💡 *Tải lên file ZIP nguồn, hoặc file JSON/Markdown đơn lẻ kết hợp với việc tải lên các file ảnh có tên tương ứng để hệ thống nhúng đầy đủ.*")
     
     offline_file = st.file_uploader(
-        "Chọn file ZIP nguồn hoặc file Markdown/JSON", 
-        type=["zip", "md", "json"], 
+        "Chọn file cấu trúc chính (ZIP, JSON hoặc Markdown)", 
+        type=["zip", "md", "json", "markdown"], 
         key="offline_upload_tab"
     )
     
-    col_act1, col_act2 = st.columns(2)
-    with col_act1:
-        normalize_zip_btn = st.button("🔄 Chuẩn hóa cấu trúc ZIP (Gom JSON & Phẳng hóa Ảnh)", type="secondary", use_container_width=True)
-    with col_act2:
-        build_word_btn = st.button("⚙️ Dựng file Word ngay lập tức", type="primary", use_container_width=True)
+    offline_images = st.file_uploader(
+        "🖼️ Tải lên hình ảnh liên quan (dùng cho JSON / Markdown đơn lẻ có tên image)",
+        type=["png", "jpg", "jpeg", "webp"],
+        accept_multiple_files=True,
+        key="offline_images_upload"
+    )
+    
+    build_word_btn = st.button("⚙️ Xử lý & Dựng file Word ngay lập tức", type="primary", use_container_width=True)
 
-    if normalize_zip_btn or build_word_btn:
+    if build_word_btn:
         if not offline_file:
             st.warning("Vui lòng tải lên file nguồn trước!")
         else:
@@ -269,6 +272,11 @@ with tab_offline:
 
             full_markdown_list = []
             images_dict = {}
+
+            # Nạp các file ảnh được tải lên riêng lẻ vào bộ nhớ đệm ảnh
+            if offline_images:
+                for img_file in offline_images:
+                    images_dict[img_file.name] = img_file.getvalue()
 
             try:
                 file_bytes = offline_file.getvalue()
@@ -286,7 +294,6 @@ with tab_offline:
                                 if "__MACOSX" in rel_path:
                                     continue
                                 
-                                # Đọc ảnh phẳng hoặc trong thư mục images
                                 if file.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".gif")) or "images/" in rel_path.replace("\\", "/"):
                                     with open(full_path, "rb") as img_f:
                                         images_dict[file] = img_f.read()
@@ -313,7 +320,7 @@ with tab_offline:
                     else:
                         full_markdown_list.append(json.dumps(j_content, ensure_ascii=False, indent=2))
 
-                elif file_extension == "md":
+                elif file_extension in ["md", "markdown"]:
                     full_markdown_list.append(file_bytes.decode("utf-8", errors="ignore"))
 
                 full_markdown = "".join(full_markdown_list)
@@ -324,28 +331,11 @@ with tab_offline:
                 st.session_state.active_images_dict = images_dict
                 st.session_state.active_file_name = base_name_off
 
-                if normalize_zip_btn:
-                    zip_buffer = io.BytesIO()
-                    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as clean_zip:
-                        clean_zip.writestr("output.md", full_markdown)
-                        for img_name, img_bytes in images_dict.items():
-                            clean_zip.writestr(f"images/{os.path.basename(img_name)}", img_bytes)
-                    
-                    st.success(f"✅ Đã chuẩn hóa xong! Tìm thấy {len(images_dict)} ảnh.")
-                    st.download_button(
-                        label="📦 Tải xuống ZIP đã chuẩn hóa sạch sẽ",
-                        data=zip_buffer.getvalue(),
-                        file_name=f"{base_name_off}_Normalized.zip",
-                        mime="application/zip",
-                        type="primary"
-                    )
-                
-                if build_word_btn:
-                    compile_markdown_to_word(full_markdown, images_dict)
-                    st.success(f"🎉 Đã bóc tách {len(images_dict)} ảnh và dựng xong file Word thành công!")
+                compile_markdown_to_word(full_markdown, images_dict)
+                st.success(f"🎉 Đã bóc tách {len(images_dict)} ảnh và dựng xong file Word thành công!")
             except Exception as e:
                 log_error(f"Lỗi xử lý file offline: {str(e)}")
-                st.error(f"Lỗi khi xử lý: {e}")
+                st.error(f"Lỗi xử lý: {e}")
 
 # ==========================================
 # KHUNG XEM TRƯỚC VÀ TẢI XUỐNG DÙNG CHUNG
@@ -479,3 +469,14 @@ if st.session_state.mistral_preview_markdown:
     </html>
     """
     components.html(mistral_component_html, height=780, scrolling=False)
+
+# --- XEM NHẬT KÝ HỆ THỐNG ---
+st.divider()
+with st.expander("🛠️ Xem Nhật ký hệ thống (System Logs)"):
+    if os.path.exists(LOG_FILE):
+        with open(LOG_FILE, "r", encoding="utf-8", errors="ignore") as log_file:
+            st.text_area("Nội dung file app.log", log_file.read(), height=250)
+        if st.button("Xóa lịch sử log"):
+            open(LOG_FILE, "w", encoding="utf-8").close()
+            st.success("Đã làm sạch file log!")
+            st.rerun()
