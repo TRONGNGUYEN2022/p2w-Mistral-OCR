@@ -162,7 +162,7 @@ st.title("🌪️ Mistral OCR & ZIP Normalizer Processor")
 tab_online, tab_offline = st.tabs(["🚀 Mistral OCR (Online)", "📁 Xử lý & Chuẩn hoá Offline"])
 
 # ==========================================
-# TAB 1: MISTRAL OCR ONLINE (GIỮ NGUYÊN 100% GỐC TỪ P2W.PY)
+# TAB 1: MISTRAL OCR ONLINE (GIỮ NGUYÊN 100% BẢN GỐC)
 # ==========================================
 with tab_online:
     st.subheader("1. Cấu hình API Key Mistral")
@@ -266,11 +266,11 @@ with tab_online:
                     st.error(f"Lỗi khi xử lý: {e}")
 
 # ==========================================
-# TAB 2: XỬ LÝ OFFLINE (HỖ TRỢ ZIP, JSON, MARKDOWN VÀ NÚT CHUẨN HÓA ZIP)
+# TAB 2: XỬ LÝ & CHUẨN HÓA OFFLINE (TÍCH HỢP ĐỦ NÚT CHUẨN HÓA ZIP VÀ DỰNG WORD)
 # ==========================================
 with tab_offline:
     st.subheader("📁 Chuẩn hóa cấu trúc ZIP thô & Dựng file Word")
-    st.markdown("💡 *Nạp file ZIP thành phẩm, file JSON đơn lẻ hoặc file Markdown. Hệ thống sẽ tự động bóc tách ảnh và văn bản để dựng Word hoàn chỉnh.*")
+    st.markdown("💡 *Nếu bạn có file ZIP thô chứa các thư mục con phức tạp hoặc JSON/MD, hãy tải lên đây. Bạn có thể bấm **'🔄 Chuẩn hóa cấu trúc ZIP'** hoặc **'⚙️ Dựng file Word ngay lập tức'**.*")
     
     offline_file = st.file_uploader(
         "Chọn file ZIP nguồn hoặc file Markdown/JSON", 
@@ -312,13 +312,11 @@ with tab_offline:
                                 if "__MACOSX" in rel_path:
                                     continue
                                 
+                                # Lọc ảnh từ bất kỳ thư mục con nào ném về dạng tên phẳng
                                 if file.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".gif")) or "images/" in rel_path.replace("\\", "/"):
                                     with open(full_path, "rb") as img_f:
                                         images_dict[file] = img_f.read()
-                                elif file.lower() == "output.md" or file.endswith(".md"):
-                                    with open(full_path, "r", encoding="utf-8", errors="ignore") as md_f:
-                                        full_markdown_list.append(md_f.read())
-                                elif file.endswith(".json"):
+                                elif file.endswith(".json") or file.endswith(".geojson"):
                                     try:
                                         with open(full_path, "r", encoding="utf-8") as j_f:
                                             j_content = json.load(j_f)
@@ -344,21 +342,21 @@ with tab_offline:
                                                 full_markdown_list.append(json.dumps(j_content, ensure_ascii=False, indent=2))
                                     except Exception as e:
                                         log_error(f"Lỗi đọc JSON {file}: {e}")
+                                elif file.endswith(".md") or file.lower() == "output.md":
+                                    with open(full_path, "r", encoding="utf-8", errors="ignore") as md_f:
+                                        full_markdown_list.append(md_f.read())
 
                 elif file_extension == "json":
-                    try:
-                        j_content = json.loads(file_bytes.decode("utf-8"))
-                        extract_images_from_json_obj(j_content, images_dict)
-                        
-                        if isinstance(j_content, dict) and "pages" in j_content:
-                            for p_idx, page in enumerate(j_content["pages"]):
-                                full_markdown_list.append(f"\n\n<h3>Trang {p_idx+1}</h3>\n\n" + page.get("markdown", ""))
-                        elif isinstance(j_content, dict) and "markdown" in j_content:
-                            full_markdown_list.append(j_content["markdown"])
-                        else:
-                            full_markdown_list.append(json.dumps(j_content, ensure_ascii=False, indent=2))
-                    except:
-                        full_markdown_list.append(file_bytes.decode("utf-8", errors="ignore"))
+                    j_content = json.loads(file_bytes.decode("utf-8"))
+                    extract_images_from_json_obj(j_content, images_dict)
+                    
+                    if isinstance(j_content, dict) and "pages" in j_content:
+                        for p_idx, page in enumerate(j_content["pages"]):
+                            full_markdown_list.append(f"\n\n<h3>Trang {p_idx+1}</h3>\n\n" + page.get("markdown", ""))
+                    elif isinstance(j_content, dict) and "markdown" in j_content:
+                        full_markdown_list.append(j_content["markdown"])
+                    else:
+                        full_markdown_list.append(json.dumps(j_content, ensure_ascii=False, indent=2))
 
                 elif file_extension == "md":
                     full_markdown_list.append(file_bytes.decode("utf-8", errors="ignore"))
@@ -371,6 +369,7 @@ with tab_offline:
                 st.session_state.active_images_dict = images_dict
                 st.session_state.active_file_name = base_name_off
 
+                # Nếu bấm nút chuẩn hóa ZIP thô thành ZIP sạch
                 if normalize_zip_btn:
                     zip_buffer = io.BytesIO()
                     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as clean_zip:
@@ -387,6 +386,7 @@ with tab_offline:
                         type="primary"
                     )
                 
+                # Nếu bấm nút dựng file Word
                 if build_word_btn:
                     compile_markdown_to_word(full_markdown, images_dict)
                     st.success(f"🎉 Đã bóc tách {len(images_dict)} ảnh và dựng xong file Word thành công!")
@@ -503,7 +503,7 @@ if st.session_state.mistral_preview_markdown:
         document.addEventListener("DOMContentLoaded", renderMath);
         setTimeout(renderMath, 300);
 
-        function copyContentToClipboard() {{
+        From copyContentToClipboard() {{
             const range = document.createRange();
             range.selectNode(document.getElementById('content-to-copy'));
             window.getSelection().removeAllRanges();
