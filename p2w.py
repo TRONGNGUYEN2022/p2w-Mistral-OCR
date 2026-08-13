@@ -36,7 +36,7 @@ except ImportError:
     MISTRAL_AVAILABLE = False
 
 # --- CẤU HÌNH GIAO DIỆN ---
-st.set_page_config(page_title="Mistral OCR & Client-Side ZIP Processor", page_icon="🌪️", layout="wide")
+st.set_page_config(page_title="Mistral OCR & Offline Universal Processor", page_icon="🌪️", layout="wide")
 
 # --- HÀM ĐỌC / LƯU DANH SÁCH API KEY TỪ FILE Mistral_api_key.txt ---
 KEY_FILE = "Mistral_api_key.txt"
@@ -90,8 +90,32 @@ def cleanup_old_temp_files():
             except:
                 pass
 
+def extract_images_from_json_obj(j_obj, images_dict):
+    """Hàm phụ trợ bóc tách ảnh base64 trực tiếp nằm trong cấu trúc JSON OCR"""
+    def search_and_extract(data):
+        if isinstance(data, dict):
+            if "images" in data and isinstance(data["images"], list):
+                for img_item in data["images"]:
+                    if isinstance(img_item, dict):
+                        img_id = img_item.get("id") or img_item.get("name")
+                        b64_str = img_item.get("image_base64") or img_item.get("base64") or img_item.get("data")
+                        if img_id and b64_str:
+                            if "," in b64_str:
+                                b64_str = b64_str.split(",")[1]
+                            try:
+                                images_dict[img_id] = base64.b64decode(b64_str)
+                            except Exception as e:
+                                log_error(f"Lỗi giải mã base64 ảnh {img_id}: {e}")
+            for v in data.values():
+                search_and_extract(v)
+        elif isinstance(data, list):
+            for item in data:
+                search_and_extract(item)
+
+    search_and_extract(j_obj)
+
 def compile_markdown_to_word(full_markdown, images_dict):
-    """Hàm chuyển đổi Markdown + Ảnh sang file Word (.docx) tối ưu bộ nhớ tạm"""
+    """Hàm chuyển đổi Markdown + Ảnh sang file Word (.docx) và đóng gói ZIP thô chuẩn xác"""
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
         zip_file.writestr("output.md", full_markdown)
@@ -135,9 +159,9 @@ def compile_markdown_to_word(full_markdown, images_dict):
             os.chdir(original_dir)
 
 # --- GIAO DIỆN CHÍNH (2 TABS) ---
-st.title("🌪️ Mistral OCR & Client-Side ZIP Preprocessor")
+st.title("🌪️ Mistral OCR & Offline Universal Processor")
 
-tab_online, tab_offline = st.tabs(["🚀 Mistral OCR (Online)", "📁 Xử lý Offline (Client-side ZIP Flattening)"])
+tab_online, tab_offline = st.tabs(["🚀 Mistral OCR (Online)", "📁 Xử lý Offline (ZIP, JSON, MD + Ảnh)"])
 
 # ==========================================
 # TAB 1: MISTRAL OCR ONLINE
@@ -235,7 +259,7 @@ with tab_online:
                     if hasattr(ocr_response, "pages"):
                         for idx, page in enumerate(ocr_response.pages):
                             page_md = page.markdown if hasattr(page, "markdown") else ""
-                            page_md = re.sub(r'!\[(.*?)\]\([^)]*?(img[_-]\d+\.(?:jpeg|jpg|png))\)', r'![\1](\2)', page_md)
+                            page_md = re.sub(r'!\[(.*?)\]\([^)]*?(img[_-]\d+\.(?:jpeg\vert{}jpg\vert{}png))\)', r'![\1](\2)', page_md)
                             page_md_safe = re.sub(r'^\s*---\s*$', '<hr/>', page_md, flags=re.MULTILINE)
                             
                             full_markdown += f"\n\n<hr/>\n<h3>Trang {idx+1}</h3>\n\n" + page_md_safe
@@ -273,107 +297,23 @@ with tab_online:
                     st.error(f"Lỗi khi xử lý: {e}")
 
 # ==========================================
-# TAB 2: XỬ LÝ OFFLINE (GỘP ZIP TẠI TRÌNH DUYỆT BẰNG JS)
+# TAB 2: XỬ LÝ OFFLINE (TỐI ƯU BỘ NHỚ AN TOÀN)
 # ==========================================
 with tab_offline:
-    st.subheader("📁 Xử lý Offline Siêu Tốc (Xử lý ZIP ngay tại trình duyệt máy khách)")
-    st.markdown("💡 *Sử dụng thư viện JavaScript chạy trực tiếp trên trình duyệt của bạn để giải nén ZIP, gom toàn bộ ảnh từ các thư mục con ra ngoài, gộp tất cả file JSON thành 1 file gọn nhẹ duy nhất rồi mới truyền lên server, loại bỏ hoàn toàn hiện tượng tràn RAM.*")
-
-    # Sử dụng HTML/JS Component để xử lý gói ZIP ngay tại Client-side trước khi truyền vào st.file_uploader hoặc form
-    client_zip_component = """
-    <div>
-        <label style="font-weight: bold; color: #2d3748; font-size: 14px;">Chọn file ZIP tài liệu lớn:</label><br/>
-        <input type="file" id="zipFileInput" accept=".zip" style="margin: 10px 0; padding: 5px; border: 1px solid #cbd5e0; border-radius: 4px; width: 100%; background: #f7fafc;" />
-        <div id="processingStatus" style="font-weight: bold; color: #2b6cb0; margin-top: 5px; font-size: 13px;"></div>
-    </div>
-    
-    <!-- Tích hợp thư viện JSZip từ CDN -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-    <script>
-    document.getElementById('zipFileInput').addEventListener('change', async function(e) {
-        const file = e.target.files[0];
-        if (!file) return;
-        
-        const statusDiv = document.getElementById('processingStatus');
-        statusDiv.innerText = "Đang xử lý giải nén và gom file tại máy khách (Client-side)...";
-        
-        try {
-            const zip = new Zip();
-            const content = await zip.loadAsync(file);
-            
-            let allJsonData = [];
-            let imagesMap = {};
-            
-            // Duyệt qua tất cả các file bên trong ZIP bất kể thư mục con
-            let fileEntries = Object.keys(content.files);
-            for (let filename of fileEntries) {
-                let zipEntry = content.files[filename];
-                if (zipEntry.dir || filename.includes('__MACOSX')) continue;
-                
-                let baseName = filename.split('/').pop();
-                if (!baseName) continue;
-                
-                // Nếu là file JSON
-                if (filename.toLowerCase().endsWith('.json')) {
-                    try {
-                        let textContent = await zipEntry.async("text");
-                        let jsonObj = JSON.parse(textContent);
-                        allJsonData.push({ filename: filename, data: jsonObj });
-                    } catch (err) {
-                        console.log("Lỗi đọc JSON:", filename);
-                    }
-                }
-                // Nếu là file ảnh từ bất kỳ thư mục nào
-                else if (/\.(png|jpg|jpeg|webp)$/i.test(baseName)) {
-                    let imgBlob = await zipEntry.async("blob");
-                    imagesMap[baseName] = imgBlob;
-                }
-            }
-            
-            statusDiv.innerText = `Đã quét xong: ${allJsonData.length} file JSON và ${Object.keys(imagesMap).length} file ảnh. Đang đóng gói lại file gọn nhẹ...`;
-            
-            // Tạo một file ZIP mới siêu gọn (chỉ gồm 1 file gộp combined_data.json và thư mục images phẳng)
-            const newZip = new JSZip();
-            newZip.file("combined_data.json", JSON.stringify(allJsonData, null, 2));
-            const imgFolder = newZip.folder("images");
-            for (let imgName in imagesMap) {
-                imgFolder.file(imgName, imagesMap[imgName]);
-            }
-            
-            const optimizedZipBlob = await newZip.generateAsync({ type: "blob" });
-            
-            // Gửi dữ liệu sạch đã tối ưu về cho Streamlit thông qua window.parent
-            const reader = new FileReader();
-            reader.readAsDataURL(optimizedZipBlob);
-            reader.onloadend = function() {
-                const base64data = reader.result;
-                // Truyền dữ liệu sang Streamlit qua custom component message hoặc hidden input
-                const dataPayload = {
-                    filename: file.name.replace(/\.[^/.]+$/, "") + "_optimized.zip",
-                    payload: base64data
-                };
-                // Gửi sự kiện cho Streamlit
-                window.parent.postMessage({ type: 'streamlit:setComponentValue', value: dataPayload }, '*');
-                statusDiv.innerText = "✔ Đã tối ưu và gửi dữ liệu sạch lên server thành công!";
-            }
-            
-        } catch (error) {
-            statusDiv.innerText = "Lỗi xử lý file ZIP ở máy khách: " + error.message;
-        }
-    });
-    </script>
-    """
-    
-    # Hiển thị component xử lý ZIP tại client
-    client_zip_result = components.html(client_zip_component, height=120)
-    
-    st.divider()
-    st.markdown("Hoặc tải lên file JSON/Markdown đơn lẻ / Gói ZIP đã tối ưu trực tiếp bên dưới:")
+    st.subheader("📁 Xử lý Offline Siêu Tốc & Chống Tràn RAM")
+    st.markdown("💡 *Sử dụng bộ đệm tạm thời `tempfile` để bóc tách file ZIP sách lớn hàng trăm trang một cách an toàn.*")
     
     offline_file = st.file_uploader(
-        "Chọn file cấu trúc chính (JSON, Markdown hoặc ZIP đã tối ưu)", 
+        "Chọn file cấu trúc chính (ZIP, JSON hoặc Markdown)", 
         type=["zip", "json", "md"], 
         key="offline_upload_tab"
+    )
+    
+    extra_image_files = st.file_uploader(
+        "Chọn các file ảnh bổ sung rời (tùy chọn)", 
+        type=["png", "jpg", "jpeg"], 
+        accept_multiple_files=True, 
+        key="offline_extra_imgs"
     )
     
     normalization_option = st.checkbox("✨ Kích hoạt cơ chế làm sạch & chuẩn hóa định dạng văn bản", value=True, key="off_norm")
@@ -394,7 +334,7 @@ with tab_offline:
             try:
                 file_bytes = offline_file.getvalue()
                 
-                # Xử lý file ZIP an toàn sau khi đã được tối ưu phẳng hóa cấu trúc ảnh và JSON
+                # Xử lý file ZIP an toàn thông qua Temporary Directory
                 if file_extension == "zip":
                     with tempfile.TemporaryDirectory() as tmp_extract_dir:
                         with zipfile.ZipFile(io.BytesIO(file_bytes)) as z:
@@ -417,7 +357,6 @@ with tab_offline:
                                             j_content = json.load(j_f)
                                         json_records.append({"filename": rel_path, "data": j_content})
                                         
-                                        # Nếu là file gộp từ client-side, nó là mảng các record
                                         if isinstance(j_content, list):
                                             for rec in j_content:
                                                 d_val = rec.get("data", rec)
@@ -436,7 +375,7 @@ with tab_offline:
                                             else:
                                                 full_markdown_list.append(json.dumps(j_content, ensure_ascii=False, indent=2))
                                     except Exception as e:
-                                        log_error(f"Lỗi đọc JSON: {e}")
+                                        log_error(f"Lỗi đọc JSON {file}: {e}")
                                 elif file.endswith(".md"):
                                     with open(full_path, "r", encoding="utf-8", errors="ignore") as md_f:
                                         full_markdown_list.append(md_f.read())
@@ -461,6 +400,11 @@ with tab_offline:
                 elif file_extension == "md":
                     full_markdown_list.append(file_bytes.decode("utf-8", errors="ignore"))
 
+                # Gộp ảnh rời bổ sung từ giao diện
+                if extra_image_files:
+                    for img_item in extra_image_files:
+                        images_dict[img_item.name] = img_item.getvalue()
+
                 full_markdown = "".join(full_markdown_list)
 
                 if normalization_option:
@@ -472,14 +416,15 @@ with tab_offline:
                 st.session_state.active_images_dict = images_dict
                 st.session_state.active_file_name = base_name_off
 
+                # Biên dịch ra file Word
                 compile_markdown_to_word(full_markdown, images_dict)
-                st.success(f"🎉 Xử lý thành công! Đã nhận diện {len(images_dict)} ảnh và tạo xong file Word.")
+                st.success(f"🎉 Xử lý thành công! Đã bóc tách {len(images_dict)} ảnh và tạo xong file Word!")
             except Exception as e:
                 log_error(f"Lỗi xử lý file offline: {str(e)}")
-                st.error(f"Lỗi khi xử lý file: {e}")
+                st.error(f"Lỗi khi đọc file cấu trúc: {e}")
 
 # ==========================================
-# KHUNG XEM TRƯỚC VÀ TẢI XUỐNG DÙNG CHUNG
+# KHUNG XEM TRƯỚC VÀ CÁC TÙY CHỌN TẢI XUỐNG DÙNG CHUNG
 # ==========================================
 if st.session_state.mistral_preview_markdown:
     st.divider()
@@ -538,6 +483,7 @@ if st.session_state.mistral_preview_markdown:
     processed_html = re.sub(r'!\[(.*?)\]\((.*?)\)', replace_img_smart_html, raw_md)
     escaped_markdown_json = json.dumps(processed_html)
 
+    # Component giao diện xem trước kèm nút Copy dán Word trực tiếp
     mistral_component_html = f"""
     <!DOCTYPE html>
     <html>
@@ -610,3 +556,4 @@ if st.session_state.mistral_preview_markdown:
     </html>
     """
     components.html(mistral_component_html, height=780, scrolling=False)
+]
