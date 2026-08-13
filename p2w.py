@@ -90,10 +90,11 @@ def compile_markdown_to_word(full_markdown, images_dict):
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
         zip_file.writestr("output.md", full_markdown)
-        for img_name, img_bytes in images_dict.items():
-            clean_img_name = os.path.basename(img_name)
-            zip_file.writestr(f"images/{clean_img_name}", img_bytes)
-            zip_file.writestr(f"{clean_img_name}", img_bytes)
+        if images_dict:
+            for img_name, img_bytes in images_dict.items():
+                clean_img_name = os.path.basename(img_name)
+                zip_file.writestr(f"images/{clean_img_name}", img_bytes)
+                zip_file.writestr(f"{clean_img_name}", img_bytes)
     st.session_state.mistral_raw_zip_bytes = zip_buffer.getvalue()
 
     with tempfile.TemporaryDirectory() as tmp_dir:
@@ -101,12 +102,13 @@ def compile_markdown_to_word(full_markdown, images_dict):
         img_sub_dir = os.path.join(tmp_dir, "images")
         os.makedirs(img_sub_dir, exist_ok=True)
         
-        for img_name, img_bytes in images_dict.items():
-            clean_name = os.path.basename(img_name)
-            with open(os.path.join(tmp_dir, clean_name), "wb") as f_root:
-                f_root.write(img_bytes)
-            with open(os.path.join(img_sub_dir, clean_name), "wb") as f_sub:
-                f_sub.write(img_bytes)
+        if images_dict:
+            for img_name, img_bytes in images_dict.items():
+                clean_name = os.path.basename(img_name)
+                with open(os.path.join(tmp_dir, clean_name), "wb") as f_root:
+                    f_root.write(img_bytes)
+                with open(os.path.join(img_sub_dir, clean_name), "wb") as f_sub:
+                    f_sub.write(img_bytes)
 
         with open(temp_md_path, "w", encoding="utf-8") as f:
             f.write(full_markdown)
@@ -240,11 +242,11 @@ with tab_online:
                     st.error(f"Lỗi khi xử lý: {e}")
 
 # ==========================================
-# TAB 2: XỬ LÝ OFFLINE (CÓ THÊM NÚT UPLOAD IMAGES CHO FILE ĐƠN)
+# TAB 2: XỬ LÝ OFFLINE (AN TOÀN KHI KHÔNG CÓ ẢNH UPLOAD)
 # ==========================================
 with tab_offline:
     st.subheader("📁 Xử lý Offline từ ZIP, JSON hoặc Markdown đơn kèm Ảnh")
-    st.markdown("💡 *Tải lên file ZIP nguồn, hoặc file JSON/Markdown đơn lẻ kết hợp với việc tải lên các file ảnh có tên tương ứng để hệ thống nhúng đầy đủ.*")
+    st.markdown("💡 *Tải lên file ZIP nguồn, hoặc file JSON/Markdown đơn lẻ kết hợp với việc tải lên các file ảnh có tên tương ứng (nếu cần).*")
     
     offline_file = st.file_uploader(
         "Chọn file cấu trúc chính (ZIP, JSON hoặc Markdown)", 
@@ -253,7 +255,7 @@ with tab_offline:
     )
     
     offline_images = st.file_uploader(
-        "🖼️ Tải lên hình ảnh liên quan (dùng cho JSON / Markdown đơn lẻ có tên image)",
+        "🖼️ Tải lên hình ảnh liên quan (dùng cho JSON / Markdown đơn lẻ - tùy chọn)",
         type=["png", "jpg", "jpeg", "webp"],
         accept_multiple_files=True,
         key="offline_images_upload"
@@ -273,7 +275,7 @@ with tab_offline:
             full_markdown_list = []
             images_dict = {}
 
-            # Nạp các file ảnh được tải lên riêng lẻ vào bộ nhớ đệm ảnh
+            # Nạp các file ảnh được tải lên riêng lẻ (nếu có) một cách an toàn
             if offline_images:
                 for img_file in offline_images:
                     images_dict[img_file.name] = img_file.getvalue()
