@@ -29,14 +29,14 @@ def log_info(msg):
 def log_error(msg):
     logging.error(msg)
 
-# Import thư viện mistralai SDK
+# Import thư viện mistralai SDK[cite: 1]
 try:
     from mistralai.client import Mistral
     MISTRAL_AVAILABLE = True
 except ImportError:
     MISTRAL_AVAILABLE = False
 
-# Import thư viện google-genai chính thức mới nhất
+# Import thư viện google-genai chính thức
 try:
     from google import genai
     from google.genai import types
@@ -45,7 +45,7 @@ except ImportError:
     GEMINI_AVAILABLE = False
 
 # --- CẤU HÌNH GIAO DIỆN ---
-st.set_page_config(page_title="Universal OCR & AI Text Normalizer with Page Chunking", page_icon="🌪️", layout="wide")
+st.set_page_config(page_title="Mistral OCR & Universal Offline AI Processor", page_icon="🌪️", layout="wide")
 
 # --- HÀM ĐỌC / LƯU DANH SÁCH API KEY TỪ FILE ---
 KEY_FILE = "Mistral_api_key.txt"
@@ -60,7 +60,7 @@ def load_api_keys_from_file():
                     return keys
         except Exception as e:
             log_error(f"Lỗi đọc file {KEY_FILE}: {e}")
-    return ["Asht2uDLjH8WTWnU06dBWdPbpcVQrbt5"] # Key mặc định dự phòng
+    return ["Asht2uDLjH8WTWnU06dBWdPbpcVQrbt5"] # Key mặc định dự phòng[cite: 1]
 
 def save_api_keys_to_file(keys_list):
     try:
@@ -123,89 +123,113 @@ def cleanup_old_temp_files():
             except:
                 pass
 
-def extract_images_from_json_obj(j_obj, images_dict):
-    """Bóc tách ảnh base64 trực tiếp nằm trong cấu trúc JSON OCR bất kỳ"""
+def extract_all_text_recursively(data):
+    """Hàm thông minh quét vét cạn toàn bộ text/markdown từ MỌI định dạng JSON bất kỳ (Docling, OCR raw, v.v.)"""
+    texts = []
+    if isinstance(data, dict):
+        for key in ["markdown", "content", "text", "p_text"]:
+            if key in data and isinstance(data[key], str):
+                texts.append(data[key])
+        for k, v in data.items():
+            if k not in ["markdown", "content", "text", "p_text", "images"]:
+                texts.extend(extract_all_text_recursively(v))
+    elif isinstance(data, list):
+        for item in data:
+            texts.extend(extract_all_text_recursively(item))
+    return texts
+
+def extract_images_from_any_json(j_obj, images_dict):
+    """Bóc tách toàn bộ ảnh base64 từ mọi ngóc ngách của bất kỳ file JSON nào"""
     def search_and_extract(data):
         if isinstance(data, dict):
-            if "images" in data and isinstance(data["images"], list):
-                for img_item in data["images"]:
-                    if isinstance(img_item, dict):
-                        img_id = img_item.get("id") or img_item.get("name")
-                        b64_str = img_item.get("image_base64") or img_item.get("base64") or img_item.get("data")
-                        if img_id and b64_str:
-                            if "," in b64_str:
-                                b64_str = b64_str.split(",")[1]
-                            try:
-                                images_dict[img_id] = base64.b64decode(b64_str)
-                            except Exception as e:
-                                log_error(f"Lỗi giải mã base64 ảnh {img_id}: {e}")
-            for v in data.values():
+            for k, v in data.items():
+                if k in ["images", "figures"] and isinstance(v, list):
+                    for img_item in v:
+                        if isinstance(img_item, dict):
+                            img_id = img_item.get("id") or img_item.get("name") or img_item.get("path")
+                            b64_str = img_item.get("image_base64") or img_item.get("base64") or img_item.get("data")
+                            if img_id and b64_str:
+                                if "," in b64_str:
+                                    b64_str = b64_str.split(",")[1]
+                                try:
+                                    img_name = os.path.basename(str(img_id))
+                                    images_dict[img_name] = base64.b64decode(b64_str)
+                                except Exception as e:
+                                    log_error(f"Lỗi giải mã ảnh: {e}")
                 search_and_extract(v)
         elif isinstance(data, list):
             for item in data:
                 search_and_extract(item)
-
     search_and_extract(j_obj)
 
-def normalize_pages_with_gemini(pages_list, gemini_api_key, model_name="gemini-2.5-pro", batch_size=10):
+def smart_normalize_with_gemini(full_text, gemini_api_key, model_name="gemini-2.5-pro", chunk_size=10000):
     """
-    Cơ chế Page-based Chunking: Gom nhóm các trang (ví dụ mỗi lần gửi 10 trang) 
-    để xử lý tuần tự toàn bộ tài liệu 122+ trang mà không bị sót trang hay cụt nội dung.
+    Chia nhỏ văn bản (Chunking) theo ký tự, gửi qua Gemini Pro để tự động phát hiện,
+    sửa lỗi tiếng Việt, chuẩn hóa LaTeX và gộp nối hoàn chỉnh tài liệu siêu dài.
     """
     if not GEMINI_AVAILABLE or not gemini_api_key.strip():
-        log_info("Bỏ qua bước chuẩn hóa Gemini do thiếu thư viện hoặc API Key.")
-        return "\n\n".join(pages_list)
+        log_info("Thiếu Gemini API Key, bỏ qua bước AI normalization.")
+        return full_text
     
     client = genai.Client(api_key=gemini_api_key.strip())
     system_instruction = (
-        "Bạn là chuyên gia biên tập tài liệu học thuật và xử lý OCR hàng đầu. "
-        "Nhiệm vụ của bạn là làm sạch và chuẩn hóa danh sách các trang tài liệu được cung cấp:\n"
-        "1. Sửa toàn bộ lỗi chính tả tiếng Việt bị sai do OCR (mất dấu, dính chữ, sai dấu thanh).\n"
-        "2. Chuẩn hóa cấu trúc: Gộp các dòng bị ngắt cụt thành đoạn văn hoàn chỉnh, giữ đúng định dạng tiêu đề (#, ##).\n"
-        "3. Chuẩn hóa công thức toán học: Mọi biểu thức toán học, ký hiệu, phân số PHẢI được bọc chuẩn trong cặp dấu đô la ($...$ cho inline hoặc $$...$$ cho block LaTeX).\n"
-        "4. QUAN TRỌNG: Giữ nguyên vẹn 100% các cú pháp hiển thị ảnh dạng Markdown (ví dụ: ![img-0.jpeg](img-0.jpeg)), không được xóa hoặc đổi tên.\n"
-        "5. Xử lý và trả về kết quả ĐẦY ĐỦ tất cả các trang có trong đợt gửi này, không được bỏ sót bất kỳ trang nào."
+        "Bạn là một chuyên gia biên tập tài liệu và xử lý OCR. "
+        "Nhiệm vụ của bạn là tự động phát hiện và sửa MỌI lỗi có trong đoạn văn bản Markdown/JSON được cung cấp:\n"
+        "1. Tự động tìm và sửa lỗi chính tả tiếng Việt do OCR (mất dấu, dính chữ, sai dấu thanh, lỗi font).\n"
+        "2. Tự động sửa lỗi ngắt dòng cụt lủn, gom nhóm lại thành đoạn văn chuẩn.\n"
+        "3. Chuẩn hóa toàn bộ công thức toán học, lý hóa về định dạng LaTeX chuẩn ($...$ cho inline, $$...$$ cho block).\n"
+        "4. GIỮ NGUYÊN VẸN 100% cú pháp hình ảnh dạng Markdown (ví dụ: ![img-0.jpeg](img-0.jpeg) hoặc ![alt](images/abc.png)).\n"
+        "5. Trả về kết quả hoàn chỉnh, tuyệt đối không tóm tắt hay cắt cụt nội dung."
     )
 
-    total_pages = len(pages_list)
-    normalized_pages = []
+    lines = full_text.splitlines()
+    chunks = []
+    current_chunk = ""
+
+    for line in lines:
+        if len(current_chunk) + len(line) < chunk_size:
+            current_chunk += line + "\n"
+        else:
+            if current_chunk:
+                chunks.append(current_chunk)
+            current_chunk = line + "\n"
+    if current_chunk:
+        chunks.append(current_chunk)
+
+    log_info(f"Tổng số phần (chunks) gửi cho Gemini: {len(chunks)}")
+    normalized_chunks = []
     
     progress_bar = st.progress(0)
     status_text = st.empty()
 
-    # Chia danh sách trang thành các batch (nhóm trang) an toàn
-    for i in range(0, total_pages, batch_size):
-        batch = pages_list[i:i + batch_size]
-        batch_text = "\n\n---\n\n".join([f"### Trang {i+idx+1}\n{p}" for idx, p in enumerate(batch)])
-        
-        status_text.text(f"Đang chuẩn hóa các trang {i+1} đến {min(i+batch_size, total_pages)} / Tổng số {total_pages} trang...")
+    for idx, chunk in enumerate(chunks):
+        status_text.text(f"AI đang phân tích và chuẩn hóa phần {idx+1}/{len(chunks)}...")
         try:
             response = client.models.generate_content(
                 model=model_name,
-                contents=[batch_text],
+                contents=[chunk],
                 config=types.GenerateContentConfig(
                     system_instruction=system_instruction,
                     temperature=0.1,
                     max_output_tokens=65536
                 )
             )
-            cleaned_batch = response.text
-            cleaned_batch = cleaned_batch.replace("```markdown", "").replace("```", "").strip()
-            normalized_pages.append(cleaned_batch)
+            cleaned = response.text.replace("```markdown", "").replace("```", "").strip()
+            normalized_chunks.append(cleaned)
         except Exception as e:
-            log_error(f"Lỗi ở nhóm trang {i+1}-{i+batch_size}: {e}")
-            normalized_pages.append(batch_text) # Giữ nguyên bản gốc nếu lỗi API
+            log_error(f"Lỗi chunk {idx+1}: {e}")
+            normalized_chunks.append(chunk)
         
-        progress_bar.progress(min((i + batch_size) / total_pages, 1.0))
+        progress_bar.progress(min((idx + 1) / len(chunks), 1.0))
 
-    status_text.text("Đã hoàn tất chuẩn hóa toàn bộ các trang của tài liệu!")
+    status_text.text("Đã hoàn tất chuẩn hóa toàn bộ tài liệu!")
     progress_bar.empty()
     status_text.empty()
 
-    return "\n\n---\n\n".join(normalized_pages)
+    return "\n\n".join(normalized_chunks)
 
 def compile_markdown_to_word(full_markdown, images_dict):
-    """Biên dịch Markdown + Ảnh thành file Word (.docx) và ZIP thô, tự động khớp đường dẫn ảnh cho Pandoc"""
+    """Hàm biên dịch Markdown + Ảnh sang file Word (.docx) và ZIP thô chuẩn xác"""
     fixed_markdown = full_markdown
     def fix_image_path(match):
         alt = match.group(1)
@@ -222,8 +246,8 @@ def compile_markdown_to_word(full_markdown, images_dict):
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
         zip_file.writestr("output.md", fixed_markdown)
         for img_name, img_bytes in images_dict.items():
-            zip_file.writestr(f"images/{img_name}", img_bytes)
-            zip_file.writestr(f"{img_name}", img_bytes)
+            zip_file.writestr(f"images/{os.path.basename(img_name)}", img_bytes)
+            zip_file.writestr(f"{os.path.basename(img_name)}", img_bytes)
     st.session_state.mistral_raw_zip_bytes = zip_buffer.getvalue()
 
     with tempfile.TemporaryDirectory() as tmp_dir:
@@ -261,9 +285,9 @@ def compile_markdown_to_word(full_markdown, images_dict):
             os.chdir(original_dir)
 
 # --- GIAO DIỆN CHÍNH (2 TABS) ---
-st.title("🌪️ Universal OCR & AI Text Normalizer with Page Chunking")
+st.title("🌪️ Mistral OCR & Universal Offline AI Processor")
 
-tab_online, tab_offline = st.tabs(["🚀 Mistral OCR (Online)", "📁 Xử lý Offline (ZIP, JSON, Markdown + Page Chunking AI)"])
+tab_online, tab_offline = st.tabs(["🚀 Mistral OCR (Online)", "📁 Xử lý Offline (JSON/Markdown + AI Tự Trị)"])
 
 # ==========================================
 # TAB 1: MISTRAL OCR ONLINE
@@ -324,16 +348,16 @@ with tab_online:
         if not mistral_file:
             st.warning("Vui lòng chọn file!")
         elif not active_m_key:
-            st.error("Vui lòng nhập hoặc chọn Mistral API Key!")
+            st.error("Vui lòng nhập hoặc chọn Mistral API Key![cite: 1]")
         elif not MISTRAL_AVAILABLE:
-            st.error("Chưa cài đặt thư viện `mistralai`.")
+            st.error("Chưa cài đặt thư viện `mistralai`.[cite: 1]")
         else:
             cleanup_old_temp_files()
             original_full_name = mistral_file.name
             base_name_only = original_full_name.rsplit('.', 1)[0]
             log_info(f"Bắt đầu xử lý Mistral OCR cho file: {original_full_name}")
 
-            with st.spinner("Đang gửi file lên Mistral OCR API và gom dữ liệu..."):
+            with st.spinner("Đang gửi file lên Mistral OCR API và gom dữ liệu JSON/Markdown..."):
                 try:
                     client = Mistral(api_key=active_m_key)
                     file_bytes = mistral_file.getvalue()
@@ -399,12 +423,12 @@ with tab_online:
                     st.error(f"Lỗi khi xử lý: {e}")
 
 # ==========================================
-# TAB 2: XỬ LÝ OFFLINE (ZIP, JSON, MD + PAGE CHUNKING AI)
+# TAB 2: XỬ LÝ OFFLINE (NÂNG CẤP AI TỰ TRỊ)
 # ==========================================
 with tab_offline:
-    st.subheader("📁 Nạp, Chuẩn hóa Sách Dài (122+ Trang) bằng Page Chunking AI & Dựng Word")
-    st.markdown("💡 *Upload tài liệu lớn (ZIP, JSON, Markdown). Hệ thống tự động bóc tách từng trang, gửi Gemini Pro xử lý theo nhóm trang để không bao giờ bị cụt nội dung, sau đó ghép nối ra Word hoàn chỉnh.*")
-    
+    st.subheader("📁 Xử lý Offline Thông Minh (Mọi file JSON, Markdown, ZIP + AI Tự Trị)")
+    st.markdown("💡 *Hệ thống tự động vét cạn toàn bộ cấu trúc file, dùng Gemini Pro phát hiện và sửa mọi lỗi chính tả/LaTeX, đồng thời gom toàn bộ ảnh vào chung thư mục để dựng Word.*")
+
     col_gk1, col_gk2 = st.columns(2)
     with col_gk1:
         def update_gemini_key():
@@ -412,24 +436,14 @@ with tab_offline:
             save_config(st.session_state.saved_gemini_key)
 
         gemini_token_input = st.text_input(
-            "Nhập Gemini API Key (cho Page Chunking AI):", 
+            "Nhập Gemini API Key (cho AI Tự Trị):", 
             value=st.session_state.saved_gemini_key, 
             type="password", 
-            disabled=not st.session_state.gemini_key_editable, 
             key="gemini_input_field", 
             on_change=update_gemini_key
         )
-        if st.button("Đổi Gemini Key"):
-            st.session_state.gemini_key_editable = not st.session_state.gemini_key_editable
-            st.rerun()
-        if st.session_state.gemini_key_editable and st.button("Lưu Gemini Key"):
-            st.session_state.saved_gemini_key = gemini_token_input
-            save_config(st.session_state.saved_gemini_key)
-            st.session_state.gemini_key_editable = False
-            st.success("Đã lưu Gemini Key!")
-            st.rerun()
     with col_gk2:
-        selected_gemini_model = st.selectbox("Chọn Model Gemini xử lý:", ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-1.5-pro"], index=0)
+        selected_gemini_model = st.selectbox("Chọn Model AI chuẩn hóa:", ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-1.5-pro"], index=0)
 
     offline_file = st.file_uploader(
         "Chọn file cấu trúc chính (ZIP, JSON hoặc Markdown)", 
@@ -438,16 +452,16 @@ with tab_offline:
     )
     
     extra_image_files = st.file_uploader(
-        "Chọn các file ảnh bổ sung rời (nếu có)", 
+        "Chọn thêm các file/thư mục ảnh rời (tùy chọn)", 
         type=["png", "jpg", "jpeg"], 
         accept_multiple_files=True, 
         key="offline_extra_imgs"
     )
     
-    use_ai_normalization = st.checkbox("✨ Kích hoạt Page Chunking AI (Xử lý toàn bộ 122+ trang không sót chữ)", value=True)
-    batch_size_input = st.slider("Số lượng trang gửi mỗi lần gọi Gemini:", min_value=5, max_value=30, value=10, step=5)
+    use_ai_normalization = st.checkbox("✨ Bật AI Tự Trị (Tự phát hiện & fix mọi lỗi cấu trúc, chính tả, LaTeX)", value=True, key="off_ai_check")
+    chunk_size_input = st.slider("Cỡ chunk cắt văn bản gửi AI (ký tự):", min_value=5000, max_value=20000, value=10000, step=2500, key="off_chunk_slider")
 
-    if st.button("⚙️ Xử lý, Page Chunking AI Toàn Bộ & Dựng Word"):
+    if st.button("⚙️ Xử lý Offline, Tự Trị AI & Dựng Word"):
         if not offline_file:
             st.warning("Vui lòng tải lên file dữ liệu cấu trúc chính!")
         else:
@@ -456,14 +470,14 @@ with tab_offline:
             base_name_off = file_name_full.rsplit('.', 1)[0]
             file_extension = file_name_full.split('.')[-1].lower()
 
-            pages_list = []
+            extracted_texts = []
             images_dict = {}
             json_records = []
 
             try:
                 file_bytes = offline_file.getvalue()
                 
-                # 1. Nạp và bóc tách từ file ZIP
+                # 1. Đọc file ZIP
                 if file_extension == "zip":
                     with zipfile.ZipFile(io.BytesIO(file_bytes)) as z:
                         for filename in z.namelist():
@@ -474,77 +488,60 @@ with tab_offline:
                                 try:
                                     j_content = json.loads(z.read(filename).decode("utf-8"))
                                     json_records.append({"filename": filename, "data": j_content})
-                                    extract_images_from_json_obj(j_content, images_dict)
-                                    
-                                    if "pages" in j_content:
-                                        for page in j_content["pages"]:
-                                            p_md = page.get("markdown", "")
-                                            if p_md.strip():
-                                                pages_list.append(p_md)
-                                    elif "ketQuaOcr" in j_content and "pages" in j_content["ketQuaOcr"]:
-                                        for p_obj in j_content["ketQuaOcr"]["pages"]:
-                                            p_md = p_obj.get("markdown", "")
-                                            if p_md.strip():
-                                                pages_list.append(p_md)
+                                    extract_images_from_any_json(j_content, images_dict)
+                                    text_frags = extract_all_text_recursively(j_content)
+                                    if text_frags:
+                                        extracted_texts.extend(text_frags)
                                     else:
-                                        pages_list.append(json.dumps(j_content, ensure_ascii=False, indent=2))
+                                        extracted_texts.append(json.dumps(j_content, ensure_ascii=False, indent=2))
                                 except Exception as e:
                                     log_error(f"Lỗi đọc file json trong zip: {e}")
                             elif filename.endswith(".md") and not filename.startswith("__MACOSX"):
                                 md_content = z.read(filename).decode("utf-8")
-                                pages_list.extend([p for p in md_content.split("<hr/>") if p.strip()])
+                                extracted_texts.append(md_content)
 
-                # 2. Nạp từ file JSON đơn lẻ bất kỳ
+                # 2. Đọc file JSON đơn lẻ bất kỳ
                 elif file_extension == "json":
                     j_content = json.loads(file_bytes.decode("utf-8"))
                     json_records.append({"filename": file_name_full, "data": j_content})
-                    extract_images_from_json_obj(j_content, images_dict)
-                    
-                    if "pages" in j_content:
-                        for page in j_content["pages"]:
-                            p_md = page.get("markdown", "")
-                            if p_md.strip():
-                                pages_list.append(p_md)
-                    elif "ketQuaOcr" in j_content and "pages" in j_content["ketQuaOcr"]:
-                        for p_obj in j_content["ketQuaOcr"]["pages"]:
-                            p_md = p_obj.get("markdown", "")
-                            if p_md.strip():
-                                pages_list.append(p_md)
+                    extract_images_from_any_json(j_content, images_dict)
+                    text_frags = extract_all_text_recursively(j_content)
+                    if text_frags:
+                        extracted_texts.extend(text_frags)
                     else:
-                        pages_list.append(json.dumps(j_content, ensure_ascii=False, indent=2))
+                        extracted_texts.append(json.dumps(j_content, ensure_ascii=False, indent=2))
 
-                # 3. Nạp từ file Markdown đơn lẻ (.md)
+                # 3. Đọc file Markdown đơn lẻ
                 elif file_extension == "md":
-                    md_content = file_bytes.decode("utf-8")
-                    pages_list.extend([p for p in md_content.split("<hr/>") if p.strip()])
+                    extracted_texts.append(file_bytes.decode("utf-8"))
 
                 # 4. Gộp ảnh rời từ giao diện
                 if extra_image_files:
                     for img_item in extra_image_files:
                         images_dict[img_item.name] = img_item.getvalue()
 
-                if not pages_list:
-                    pages_list = ["Không tìm thấy trang nội dung nào."]
+                raw_combined_text = "\n\n".join(extracted_texts)
+                if not raw_combined_text.strip():
+                    raw_combined_text = "Không tìm thấy nội dung văn bản."
 
-                # Bước chuẩn hóa toàn bộ bằng Page Chunking AI nếu được bật
+                # Xử lý chuẩn hóa bằng AI Tự Trị
                 if use_ai_normalization:
                     active_g_key = st.session_state.saved_gemini_key.strip()
                     if active_g_key and GEMINI_AVAILABLE:
-                        full_markdown = normalize_pages_with_gemini(pages_list, active_g_key, selected_gemini_model, batch_size_input)
+                        full_markdown = smart_normalize_with_gemini(raw_combined_text, active_g_key, selected_gemini_model, chunk_size_input)
                     else:
-                        st.warning("Chưa có Gemini API Key nên không thể thực hiện Page Chunking AI! Nối cấu trúc thô...")
-                        full_markdown = "\n\n---\n\n".join(pages_list)
+                        st.warning("Chưa có Gemini API Key! Tiến hành xuất nội dung thô...")
+                        full_markdown = raw_combined_text
                 else:
-                    full_markdown = "\n\n---\n\n".join(pages_list)
+                    full_markdown = raw_combined_text
 
                 st.session_state.mistral_json_records = json_records
                 st.session_state.mistral_preview_markdown = full_markdown
                 st.session_state.active_images_dict = images_dict
                 st.session_state.active_file_name = base_name_off
 
-                # Biên dịch ra file Word
                 compile_markdown_to_word(full_markdown, images_dict)
-                st.success(f"🎉 Xử lý thành công toàn bộ tài liệu! Đã bóc tách {len(images_dict)} ảnh và tạo xong file Word!")
+                st.success(f"🎉 Xử lý offline thành công! Đã gom {len(images_dict)} ảnh và tạo xong file Word!")
             except Exception as e:
                 log_error(f"Lỗi xử lý file offline: {str(e)}")
                 st.error(f"Lỗi khi xử lý file: {e}")
