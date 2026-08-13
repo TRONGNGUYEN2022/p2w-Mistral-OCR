@@ -86,7 +86,7 @@ def cleanup_old_temp_files():
                 pass
 
 def extract_images_from_json_obj(j_obj, images_dict):
-    """Hàm xử lý riêng cho file JSON đơn lẻ: bóc tách ảnh base64 an toàn"""
+    """Hàm bóc tách ảnh base64 từ JSON đơn độc an toàn cho RAM"""
     def search_and_extract(data):
         if isinstance(data, dict):
             if "images" in data and isinstance(data["images"], list):
@@ -265,50 +265,42 @@ with tab_online:
                     st.error(f"Lỗi khi xử lý: {e}")
 
 # ==========================================
-# TAB 2: XỬ LÝ OFFLINE (PHÂN TÁCH LUỒNG THÔNG MINH CHO ZIP VÀ JSON ĐƠN LẺ)
+# TAB 2: XỬ LÝ OFFLINE (GÔM CHUNG VỚI NÚT KÍCH HOẠT RIÊNG BIỆT)
 # ==========================================
 with tab_offline:
-    st.subheader("📁 Xử lý & Chuẩn hoá Offline (Tự động nhận diện ZIP hoặc JSON/MD)")
-    st.markdown("💡 *Tải lên file nguồn. Nếu là file `.zip`, hệ thống sẽ gọi luồng xử lý ZIP. Nếu là file `.json` hoặc `.md`, hệ thống sẽ gọi luồng xử lý file đơn.*")
-    
-    offline_file = st.file_uploader(
-        "Tải lên file nguồn (ZIP, JSON hoặc Markdown)", 
-        type=["zip", "json", "md", "markdown"], 
-        key="offline_smart_upload"
+    st.subheader("📁 Xử lý & Chuẩn hoá Offline thông minh")
+    st.markdown("💡 *Chọn chế độ xử lý phù hợp bên dưới để kích hoạt đúng các nút chức năng tương ứng.*")
+
+    offline_mode = st.radio(
+        "Chọn loại file cần xử lý:", 
+        ["📦 Xử lý file ZIP chuẩn", "📄 Xử lý file JSON / Markdown đơn lẻ + Ảnh"], 
+        horizontal=True
     )
-    
-    extra_image_files = st.file_uploader(
-        "🖼️ Tải kèm hình ảnh bổ sung rời (dành riêng cho file JSON/MD đơn lẻ)", 
-        type=["png", "jpg", "jpeg", "webp"], 
-        accept_multiple_files=True, 
-        key="offline_smart_extra_imgs"
-    )
-    
-    normalization_option = st.checkbox("✨ Kích hoạt cơ chế làm sạch & chuẩn hóa định dạng văn bản", value=True, key="smart_norm")
 
-    col_act1, col_act2 = st.columns(2)
-    with col_act1:
-        normalize_zip_btn = st.button("🔄 Chuẩn hóa cấu trúc ZIP", type="secondary", use_container_width=True)
-    with col_act2:
-        build_word_btn = st.button("⚙️ Xử lý & Dựng file Word ngay lập tức", type="primary", use_container_width=True)
+    st.divider()
 
-    if normalize_zip_btn or build_word_btn:
-        if not offline_file:
-            st.warning("Vui lòng tải lên file nguồn trước!")
-        else:
-            cleanup_old_temp_files()
-            file_name_full = offline_file.name
-            base_name_off = file_name_full.rsplit('.', 1)[0]
-            file_extension = file_name_full.split('.')[-1].lower()
+    # --- LUỒNG XỬ LÝ ZIP ---
+    if offline_mode == "📦 Xử lý file ZIP chuẩn":
+        offline_zip = st.file_uploader("Chọn file ZIP cấu trúc", type=["zip"], key="zip_mode_uploader")
+        
+        col_z1, col_z2 = st.columns(2)
+        with col_z1:
+            normalize_zip_btn = st.button("🔄 Chuẩn hóa cấu trúc ZIP", type="secondary", use_container_width=True)
+        with col_z2:
+            build_zip_word_btn = st.button("⚙️ Dựng file Word từ ZIP", type="primary", use_container_width=True)
 
-            full_markdown_list = []
-            images_dict = {}
+        if normalize_zip_btn or build_zip_word_btn:
+            if not offline_zip:
+                st.warning("Vui lòng tải lên file ZIP trước!")
+            else:
+                cleanup_old_temp_files()
+                file_name_full = offline_zip.name
+                base_name_off = file_name_full.rsplit('.', 1)[0]
+                full_markdown_list = []
+                images_dict = {}
 
-            try:
-                file_bytes = offline_file.getvalue()
-
-                # --- LUỒNG 1: XỬ LÝ KHI LÀ FILE ZIP ---
-                if file_extension == "zip":
+                try:
+                    file_bytes = offline_zip.getvalue()
                     with tempfile.TemporaryDirectory() as tmp_extract_dir:
                         with zipfile.ZipFile(io.BytesIO(file_bytes)) as z:
                             z.extractall(tmp_extract_dir)
@@ -340,63 +332,94 @@ with tab_offline:
                                     except:
                                         pass
 
-                # --- LUỒNG 2: XỬ LÝ KHI LÀ FILE JSON ĐƠN LẺ ---
-                elif file_extension == "json":
-                    j_content = json.loads(file_bytes.decode("utf-8"))
-                    extract_images_from_json_obj(j_content, images_dict)
+                    full_markdown = "".join(full_markdown_list)
+                    if not full_markdown.strip():
+                        full_markdown = "Không tìm thấy nội dung văn bản."
+
+                    st.session_state.mistral_preview_markdown = full_markdown
+                    st.session_state.active_images_dict = images_dict
+                    st.session_state.active_file_name = base_name_off
+
+                    if normalize_zip_btn:
+                        zip_buffer = io.BytesIO()
+                        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as clean_zip:
+                            clean_zip.writestr("output.md", full_markdown)
+                            for img_name, img_bytes in images_dict.items():
+                                clean_zip.writestr(f"images/{os.path.basename(img_name)}", img_bytes)
+                        
+                        st.success(f"✅ Đã chuẩn hóa xong! Tìm thấy {len(images_dict)} ảnh.")
+                        st.download_button(
+                            label="📦 Tải xuống ZIP đã chuẩn hóa sạch sẽ",
+                            data=zip_buffer.getvalue(),
+                            file_name=f"{base_name_off}_Normalized.zip",
+                            mime="application/zip",
+                            type="primary"
+                        )
                     
-                    if isinstance(j_content, dict) and "pages" in j_content:
-                        for p_idx, page in enumerate(j_content["pages"]):
-                            p_md = page.get("markdown", "")
-                            full_markdown_list.append(f"\n\n<h3>Trang {p_idx+1}</h3>\n\n" + p_md)
-                    elif isinstance(j_content, dict) and "markdown" in j_content:
-                        full_markdown_list.append(j_content["markdown"])
-                    else:
-                        full_markdown_list.append(json.dumps(j_content, ensure_ascii=False, indent=2))
+                    if build_zip_word_btn:
+                        compile_markdown_to_word(full_markdown, images_dict)
+                        st.success(f"🎉 Đã bóc tách {len(images_dict)} ảnh và dựng xong file Word thành công!")
+                except Exception as e:
+                    log_error(f"Lỗi xử lý file ZIP offline: {str(e)}")
+                    st.error(f"Lỗi xử lý: {e}")
 
-                # --- LUỒNG 3: XỬ LÝ KHI LÀ FILE MARKDOWN ĐƠN LẺ ---
-                elif file_extension in ["md", "markdown"]:
-                    full_markdown_list.append(file_bytes.decode("utf-8", errors="ignore"))
+    # --- LUỒNG XỬ LÝ FILE JSON / MARKDOWN ĐƠN LẺ ---
+    else:
+        single_file = st.file_uploader("Chọn file JSON hoặc Markdown đơn lẻ", type=["json", "md", "markdown"], key="single_mode_uploader")
+        single_images = st.file_uploader("🖼️ Tải lên hình ảnh bổ sung liên quan (tùy chọn)", type=["png", "jpg", "jpeg", "webp"], accept_multiple_files=True, key="single_mode_imgs")
+        
+        normalization_option = st.checkbox("✨ Kích hoạt cơ chế làm sạch & chuẩn hóa định dạng văn bản", value=True, key="single_norm_checkbox")
+        
+        build_single_word_btn = st.button("⚙️ Xử lý, Nhúng ảnh & Dựng file Word", type="primary", use_container_width=True, key="btn_single_compile")
 
-                # Nạp thêm ảnh rời từ giao diện (nếu có)
-                if extra_image_files:
-                    for img_item in extra_image_files:
+        if build_single_word_btn:
+            if not single_file:
+                st.warning("Vui lòng tải lên file JSON hoặc Markdown trước!")
+            else:
+                cleanup_old_temp_files()
+                file_name_full = single_file.name
+                base_name_single = file_name_full.rsplit('.', 1)[0]
+                file_extension = file_name_full.split('.')[-1].lower()
+
+                full_markdown = ""
+                images_dict = {}
+
+                if single_images:
+                    for img_item in single_images:
                         images_dict[img_item.name] = img_item.getvalue()
 
-                full_markdown = "".join(full_markdown_list)
-                if not full_markdown.strip():
-                    full_markdown = "Không tìm thấy nội dung văn bản."
-
-                if normalization_option:
-                    full_markdown = re.sub(r'\n{3,}', '\n\n', full_markdown)
-                    full_markdown = full_markdown.replace("-\n", "")
-
-                st.session_state.mistral_preview_markdown = full_markdown
-                st.session_state.active_images_dict = images_dict
-                st.session_state.active_file_name = base_name_off
-
-                if normalize_zip_btn:
-                    zip_buffer = io.BytesIO()
-                    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as clean_zip:
-                        clean_zip.writestr("output.md", full_markdown)
-                        for img_name, img_bytes in images_dict.items():
-                            clean_zip.writestr(f"images/{os.path.basename(img_name)}", img_bytes)
+                try:
+                    file_bytes = single_file.getvalue()
                     
-                    st.success(f"✅ Đã chuẩn hóa xong! Tìm thấy {len(images_dict)} ảnh.")
-                    st.download_button(
-                        label="📦 Tải xuống ZIP đã chuẩn hóa sạch sẽ",
-                        data=zip_buffer.getvalue(),
-                        file_name=f"{base_name_off}_Normalized.zip",
-                        mime="application/zip",
-                        type="primary"
-                    )
-                
-                if build_word_btn:
+                    if file_extension == "json":
+                        j_content = json.loads(file_bytes.decode("utf-8"))
+                        extract_images_from_json_obj(j_content, images_dict)
+                        
+                        if isinstance(j_content, dict) and "pages" in j_content:
+                            pages_md = []
+                            for p_idx, page in enumerate(j_content["pages"]):
+                                pages_md.append(f"\n\n<h3>Trang {p_idx+1}</h3>\n\n" + page.get("markdown", ""))
+                            full_markdown = "".join(pages_md)
+                        elif isinstance(j_content, dict) and "markdown" in j_content:
+                            full_markdown = j_content["markdown"]
+                        else:
+                            full_markdown = json.dumps(j_content, ensure_ascii=False, indent=2)
+                    elif file_extension in ["md", "markdown"]:
+                        full_markdown = file_bytes.decode("utf-8", errors="ignore")
+
+                    if normalization_option:
+                        full_markdown = re.sub(r'\n{3,}', '\n\n', full_markdown)
+                        full_markdown = full_markdown.replace("-\n", "")
+
+                    st.session_state.mistral_preview_markdown = full_markdown
+                    st.session_state.active_images_dict = images_dict
+                    st.session_state.active_file_name = base_name_single
+
                     compile_markdown_to_word(full_markdown, images_dict)
-                    st.success(f"🎉 Đã xử lý và dựng xong file Word thành công!")
-            except Exception as e:
-                log_error(f"Lỗi xử lý file offline: {str(e)}")
-                st.error(f"Lỗi xử lý: {e}")
+                    st.success(f"🎉 Đã xử lý file đơn lẻ và dựng xong file Word thành công!")
+                except Exception as e:
+                    log_error(f"Lỗi xử lý file đơn: {str(e)}")
+                    st.error(f"Lỗi xử lý file: {e}")
 
 # ==========================================
 # KHUNG XEM TRƯỚC VÀ TẢI XUỐNG DÙNG CHUNG
