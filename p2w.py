@@ -138,7 +138,7 @@ st.title("🌪️ Mistral OCR & ZIP Normalizer Processor")
 tab_online, tab_offline = st.tabs(["🚀 Mistral OCR (Online)", "📁 Xử lý & Chuẩn hoá Offline"])
 
 # ==========================================
-# TAB 1: MISTRAL OCR ONLINE (GIỮ NGUYÊN 100% GỐC)
+# TAB 1: MISTRAL OCR ONLINE (GIỮ NGUYÊN 100%)
 # ==========================================
 with tab_online:
     st.subheader("1. Cấu hình API Key Mistral")
@@ -242,20 +242,20 @@ with tab_online:
                     st.error(f"Lỗi khi xử lý: {e}")
 
 # ==========================================
-# TAB 2: XỬ LÝ OFFLINE (NÂNG CẤP ĐỌC ZIP/JSON/MD AN TOÀN SIÊU TỐC)
+# TAB 2: XỬ LÝ OFFLINE (GỌN GÀNG, HỖ TRỢ ZIP, JSON, MARKDOWN VÀ ẢNH TÙY CHỌN)
 # ==========================================
 with tab_offline:
-    st.subheader("📁 Xử lý Offline siêu tốc từ ZIP, JSON hoặc Markdown")
-    st.markdown("💡 *Hỗ trợ xử lý trực tiếp file ZIP, file JSON hoặc Markdown độc lập mà không bắt buộc phải có ảnh.*")
+    st.subheader("📁 Xử lý Offline từ ZIP, JSON hoặc Markdown")
+    st.markdown("💡 *Tải lên file nguồn (ZIP, JSON hoặc Markdown) cùng với ảnh đính kèm (nếu có), hệ thống sẽ xử lý siêu tốc và dựng file Word hoàn chỉnh.*")
     
     offline_file = st.file_uploader(
-        "Chọn file nguồn (ZIP, JSON hoặc Markdown)", 
+        "Chọn file cấu trúc chính (ZIP, JSON hoặc Markdown)", 
         type=["zip", "md", "json", "markdown"], 
         key="offline_upload_tab"
     )
     
     offline_images = st.file_uploader(
-        "🖼️ Tải kèm hình ảnh (tùy chọn - chỉ dùng nếu file cần hiển thị ảnh)",
+        "🖼️ Tải kèm hình ảnh (tùy chọn)",
         type=["png", "jpg", "jpeg", "webp"],
         accept_multiple_files=True,
         key="offline_images_upload"
